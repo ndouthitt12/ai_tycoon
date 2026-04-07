@@ -32,6 +32,7 @@ import {
   updateSubscriptionPlan,
   createSubscriptionPlan,
   deleteSubscriptionPlan,
+  updateCloudRentalPrice,
   updateTrainingAllocation,
   updateTrainingConfig,
   hire,
@@ -209,6 +210,7 @@ export default function AICompanyTycoonStep2() {
               projectedServingDemand={projectedServingDemand}
               onBuildDatacenter={(pods, quantity) => updateGame((current) => buildDatacenter(current, pods, quantity))}
               onUpdateTrainingAllocation={(value) => updateGame((current) => updateTrainingAllocation(current, value))}
+              onUpdateCloudRentalPrice={(price) => updateGame((current) => updateCloudRentalPrice(current, price))}
               onShutdownRun={(runId) => updateGame((current) => shutdownRun(current, runId))}
             />
           ) : null}

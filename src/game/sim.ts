@@ -941,6 +941,42 @@ export function getReservedCostPerPod(game: GameState) {
   return Math.max(2500, BASE_POD_COST - game.upgrades.cloud * 450);
 }
 
+// The going market rate competitors are willing to pay per pod per month.
+// Priced below the player's own reserved cost so renting only makes sense
+// when the player has genuine surplus, not as a primary business model.
+export const CLOUD_RENTAL_MARKET_RATE = 2800;
+
+function settleCloudRental(
+  game: GameState,
+  surplusPods: number,
+): { revenue: number; podsRented: number } {
+  const { pricePerPod } = game.cloudRental;
+  if (pricePerPod <= 0 || surplusPods <= 0) return { revenue: 0, podsRented: 0 };
+
+  // Competitor demand grows with game progression and the number of active models
+  // they have in the market (more models = more serving needs).
+  const totalCompetitorModels = Object.values(game.competitorCompanies).reduce(
+    (sum, c) => sum + c.models.length,
+    0,
+  );
+  const baseDemand = Math.round(game.turn * 10 + totalCompetitorModels * 30 + 60);
+
+  // Price sensitivity: at or below market rate demand is fully met;
+  // above market rate demand falls off exponentially.
+  const ratio = pricePerPod / CLOUD_RENTAL_MARKET_RATE;
+  const demandMultiplier = ratio <= 1 ? 1 : Math.exp(-3.5 * (ratio - 1));
+
+  const podsRented = Math.min(surplusPods, Math.round(baseDemand * demandMultiplier));
+  const revenue = podsRented * pricePerPod;
+  return { revenue, podsRented };
+}
+
+export function updateCloudRentalPrice(game: GameState, pricePerPod: number): GameState {
+  const next = copyGame(game);
+  next.cloudRental.pricePerPod = Math.max(0, Math.round(pricePerPod));
+  return next;
+}
+
 export function getDatacenterBuildCost(pods: number) {
   const normalizedPods = clamp(Math.round(pods), 8, 240);
   return 900000 + normalizedPods * 125000;
@@ -1363,6 +1399,9 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
       datacenters: [initialDatacenter],
       nextDatacenterId: 2,
     },
+    cloudRental: {
+      pricePerPod: 0,
+    },
     globalCohorts: JSON.parse(JSON.stringify(GLOBAL_COHORTS)),
     products: createDefaultProducts(),
     trainingConfig: {
@@ -1415,6 +1454,8 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
       trainingDemand: 0,
       trustDelta: 0,
       distributionDelta: { consumer: 0, enterprise: 0 },
+      cloudRentalRevenue: 0,
+      cloudRentalPodsRented: 0,
     },
     cash: archetype.startingCash,
     nextId: 4,
@@ -1758,8 +1799,8 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
     let totalAppeal = 0;
     const appealScores = contenders.map(contender => {
       const model = contender.model;
-      if (contender.productType === "chatbot" && cohort.category !== "Consumer") return { contender, appeal: 0 };
-      if (contender.productType === "api" && cohort.category !== "Business") return { contender, appeal: 0 };
+      if (contender.productType === "chatbot" && cohort.category !== "Consumer") return { contender, appeal: 0, currentPlan: null as SubscriptionPlan | null, usedTokensM: 0, evaluatedPrice: 0, fittingPlans: null as SubscriptionPlan[] | null, planWeights: null as number[] | null };
+      if (contender.productType === "api" && cohort.category !== "Business") return { contender, appeal: 0, currentPlan: null as SubscriptionPlan | null, usedTokensM: 0, evaluatedPrice: 0, fittingPlans: null as SubscriptionPlan[] | null, planWeights: null as number[] | null };
 
       let weighted_reliability_score = 1.0;
       Object.entries(cohort.reliabilityWeights).forEach(([tier, weight]) => {
@@ -1778,14 +1819,22 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
       let currentPlan: SubscriptionPlan | null = null;
       let neededTokensM = (cohort.sessionsPerMonth * cohort.tokensPerSession) / 1000000;
       let usedTokensM = neededTokensM;
+      let fittingPlans: SubscriptionPlan[] | null = null;
+      let planWeights: number[] | null = null;
 
       if (contender.isPlayer && contender.productType === "chatbot" && game.products.chatbot.subscriptionPlans?.length) {
          const sortedPlans = [...game.products.chatbot.subscriptionPlans].sort((a,b) => (a.price || 0) - (b.price || 0));
-         // Find cheapest plan that fits needed tokens, or otherwise pick the biggest tier plan and cap usage.
-         const match = sortedPlans.find(p => (p.tokenLimitMillions || 0) >= (neededTokensM || 0));
-         if (match) {
-            currentPlan = match;
+         const fitting = sortedPlans.filter(p => (p.tokenLimitMillions || 0) >= (neededTokensM || 0));
+         if (fitting.length > 0) {
+            // Use cheapest fitting plan's price for appeal/price-penalty calculation
+            currentPlan = fitting[0];
             evaluatedPrice = currentPlan.price || 0;
+            if (fitting.length > 1) {
+               // Pre-compute softmax weights so users spread across all fitting tiers
+               const lambda = cohort.priceSensitivity * 0.02;
+               planWeights = fitting.map(p => Math.exp(-lambda * (p.price || 0)));
+               fittingPlans = fitting;
+            }
          } else {
             currentPlan = sortedPlans[sortedPlans.length - 1]; // highest plan
             evaluatedPrice = currentPlan.price || 0;
@@ -1803,10 +1852,10 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
       appeal *= contender.salesMultiplier;
       totalAppeal += appeal;
 
-      return { contender, appeal, currentPlan, usedTokensM, evaluatedPrice };
+      return { contender, appeal, currentPlan, usedTokensM, evaluatedPrice, fittingPlans, planWeights };
     });
 
-    appealScores.forEach(({ contender, appeal, currentPlan, usedTokensM, evaluatedPrice }) => {
+    appealScores.forEach(({ contender, appeal, currentPlan, usedTokensM, evaluatedPrice, fittingPlans, planWeights }) => {
       const targetShare = totalAppeal > 0 ? appeal / totalAppeal : 0;
       const targetUsers = cohort.population * targetShare;
       const currentUsers = contender.model.subscribersByCohort[cohort.id] || 0;
@@ -1821,18 +1870,29 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
         if (delta > 0) productDeltas[contender.productType].acq += delta;
         if (delta < 0) productDeltas[contender.productType].churn += Math.abs(delta);
 
-        let cWindowScale = Math.max(1, contender.model.contextWindow / 8); 
-        let contextScaledTokensM = usedTokensM * cWindowScale;
+        const cWindowScale = Math.max(1, contender.model.contextWindow / 8);
+        const contextScaledTokensM = (usedTokensM || 0) * cWindowScale;
 
-        if (currentPlan) {
+        if (fittingPlans && planWeights && fittingPlans.length > 1) {
+          // Distribute users across all fitting tiers proportional to softmax weights
+          const totalW = planWeights.reduce((s, w) => s + w, 0);
+          fittingPlans.forEach((plan, i) => {
+            const share = planWeights![i] / totalW;
+            const usersForPlan = (nextUsers || 0) * share;
+            plan.subscribers += usersForPlan;
+            plan.revenue += usersForPlan * (plan.price || 0);
+            plan.tokenUsageMillions += usersForPlan * contextScaledTokensM;
+            productDeltas[contender.productType!].revenue += usersForPlan * (plan.price || 0);
+          });
+        } else if (currentPlan) {
            currentPlan.subscribers += nextUsers || 0;
-           currentPlan.revenue += (nextUsers || 0) * evaluatedPrice;
-           currentPlan.tokenUsageMillions += (nextUsers || 0) * (contextScaledTokensM || 0);
-           productDeltas[contender.productType].revenue += (nextUsers || 0) * evaluatedPrice;
+           currentPlan.revenue += (nextUsers || 0) * (evaluatedPrice || 0);
+           currentPlan.tokenUsageMillions += (nextUsers || 0) * contextScaledTokensM;
+           productDeltas[contender.productType].revenue += (nextUsers || 0) * (evaluatedPrice || 0);
         } else {
            const metrics = getBlendedModelMetrics(game, game.products[contender.productType]);
            if (metrics) {
-             productDeltas[contender.productType].revenue += (nextUsers || 0) * evaluatedPrice;
+             productDeltas[contender.productType].revenue += (nextUsers || 0) * (evaluatedPrice || 0);
            }
         }
       }
@@ -2544,6 +2604,11 @@ export function advanceMonth(game: GameState) {
   const allocatedTraining = (next.cloud.reservedPods * next.cloud.trainingPct) / 100;
   const trainingOverflow = Math.max(0, trainingDemand - allocatedTraining);
   const servingOverflow = Math.max(0, servingDemand - allocatedServing);
+
+  // Cloud rental: only unused pods (surplus beyond both serving and training demand) can be rented.
+  const surplusPods = Math.max(0, allocatedServing - servingDemand) + Math.max(0, allocatedTraining - trainingDemand);
+  const rentalResult = settleCloudRental(next, Math.floor(surplusPods));
+  totalRevenue += rentalResult.revenue;
   const overflowTotal = trainingOverflow + servingOverflow;
   const reservedCost = Math.round(next.cloud.reservedPods * getReservedCostPerPod(next) * effects.reservedCostMultiplier);
   const overflowCost = Math.round(
@@ -2783,6 +2848,8 @@ export function advanceMonth(game: GameState) {
     trainingDemand: Number(trainingDemand.toFixed(2)),
     trustDelta,
     distributionDelta: { consumer: consumerDelta, enterprise: enterpriseDelta },
+    cloudRentalRevenue: rentalResult.revenue,
+    cloudRentalPodsRented: rentalResult.podsRented,
   };
 
   next.history.revenue.push(Math.round(totalRevenue));

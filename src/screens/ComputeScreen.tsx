@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { MODEL_GOALS } from "../game/defs";
-import { formatVersion, getDatacenterBuildCost, getReservedCostPerPod, money, formatPods } from "../game/sim";
+import { CLOUD_RENTAL_MARKET_RATE, formatVersion, getDatacenterBuildCost, getReservedCostPerPod, money, formatPods } from "../game/sim";
 import { GameState } from "../game/types";
 import { Badge, Button, EmptyState, KpiCard, LossCurve, Panel, StatRow } from "../components/ui";
 
@@ -10,19 +10,44 @@ export function ComputeScreen({
   projectedServingDemand,
   onBuildDatacenter,
   onUpdateTrainingAllocation,
+  onUpdateCloudRentalPrice,
   onShutdownRun,
 }: {
   game: GameState;
   projectedServingDemand: number;
   onBuildDatacenter: (pods: number, quantity: number) => void;
   onUpdateTrainingAllocation: (value: number) => void;
+  onUpdateCloudRentalPrice: (price: number) => void;
   onShutdownRun: (runId: number) => void;
 }) {
   const [buildPods, setBuildPods] = useState(24);
   const [buildQuantity, setBuildQuantity] = useState(1);
+  const [rentalPriceInput, setRentalPriceInput] = useState(String(game.cloudRental.pricePerPod || ""));
   const servingPct = 100 - game.cloud.trainingPct;
   const buildCost = getDatacenterBuildCost(buildPods);
   const totalBuildCost = buildCost * Math.max(1, Math.round(buildQuantity));
+
+  // Estimated surplus: pods not being consumed by serving or training demand
+  const trainingDemand = game.activeRuns.reduce((sum, run) => sum + run.computeNeed, 0);
+  const allocatedServing = game.cloud.reservedPods * servingPct / 100;
+  const allocatedTraining = game.cloud.reservedPods * game.cloud.trainingPct / 100;
+  const estimatedSurplus = Math.max(
+    0,
+    Math.floor((allocatedServing - projectedServingDemand) + (allocatedTraining - trainingDemand)),
+  );
+
+  const rentalPrice = game.cloudRental.pricePerPod;
+  const rentalEnabled = rentalPrice > 0;
+  const priceVsMarket = rentalEnabled ? rentalPrice / CLOUD_RENTAL_MARKET_RATE : 1;
+  const rentalPriceTone =
+    !rentalEnabled ? "default" :
+    priceVsMarket <= 1 ? "good" :
+    priceVsMarket <= 1.5 ? "warning" : "bad";
+
+  function commitRentalPrice() {
+    const parsed = parseInt(rentalPriceInput, 10);
+    onUpdateCloudRentalPrice(isNaN(parsed) ? 0 : Math.max(0, parsed));
+  }
 
   return (
     <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
@@ -76,22 +101,69 @@ export function ComputeScreen({
                 </div>
               </div>
 
-              <div>
-                <div className="mb-1 flex items-center justify-between text-sm text-slate-400">
-                  <span>Training Allocation</span>
-                  <span>{game.cloud.trainingPct}%</span>
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-1 flex items-center justify-between text-sm text-slate-400">
+                    <span>Training Allocation</span>
+                    <span>{game.cloud.trainingPct}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={15}
+                    max={85}
+                    value={game.cloud.trainingPct}
+                    onChange={(event) => onUpdateTrainingAllocation(Number(event.target.value))}
+                    className="w-full"
+                  />
+                  <div className="mt-2 flex items-center justify-between text-sm text-slate-500">
+                    <span>Training {formatPods(game.cloud.reservedPods * game.cloud.trainingPct / 100)} pods</span>
+                    <span>Serving {formatPods(game.cloud.reservedPods * servingPct / 100)} pods</span>
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min={15}
-                  max={85}
-                  value={game.cloud.trainingPct}
-                  onChange={(event) => onUpdateTrainingAllocation(Number(event.target.value))}
-                  className="w-full"
-                />
-                <div className="mt-2 flex items-center justify-between text-sm text-slate-500">
-                  <span>Training {formatPods(game.cloud.reservedPods * game.cloud.trainingPct / 100)} pods</span>
-                  <span>Serving {formatPods(game.cloud.reservedPods * servingPct / 100)} pods</span>
+
+                {/* Cloud Rental Card */}
+                <div className="rounded-2xl bg-slate-900/75 p-4 ring-1 ring-inset ring-slate-800/60">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium text-slate-300">Rent Out Surplus Pods</div>
+                    {rentalEnabled && (
+                      <span className={`text-xs font-medium ${rentalPriceTone === "good" ? "text-emerald-400" : rentalPriceTone === "warning" ? "text-amber-400" : "text-red-400"}`}>
+                        {priceVsMarket <= 1 ? "Below market" : priceVsMarket <= 1.5 ? "Above market" : "Overpriced"}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Market rate {money(CLOUD_RENTAL_MARKET_RATE)}/pod/mo · Surplus {formatPods(estimatedSurplus)} pods
+                  </div>
+
+                  <label className="mt-3 block text-sm">
+                    <div className="mb-1 text-slate-500">Price per pod / month ($)</div>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        step={100}
+                        value={rentalPriceInput}
+                        placeholder="0 = disabled"
+                        onChange={(e) => setRentalPriceInput(e.target.value)}
+                        onBlur={commitRentalPrice}
+                        onKeyDown={(e) => e.key === "Enter" && commitRentalPrice()}
+                        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
+                      />
+                    </div>
+                  </label>
+
+                  <div className="mt-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-slate-500">Pods rented last month</span>
+                      <span className="font-mono text-slate-100">{formatPods(game.lastMonth.cloudRentalPodsRented)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-slate-500">Rental revenue last month</span>
+                      <span className={`font-mono ${game.lastMonth.cloudRentalRevenue > 0 ? "text-emerald-400" : "text-slate-100"}`}>
+                        {money(game.lastMonth.cloudRentalRevenue)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

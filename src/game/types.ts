@@ -234,6 +234,8 @@ export interface LastMonthSnapshot {
     consumer: number;
     enterprise: number;
   };
+  cloudRentalRevenue: number;
+  cloudRentalPodsRented: number;
 }
 
 export interface GameHistory {
@@ -288,6 +290,9 @@ export interface GameState {
     trainingPct: number;
     datacenters: DatacenterState[];
     nextDatacenterId: number;
+  };
+  cloudRental: {
+    pricePerPod: number;
   };
   globalCohorts: Record<CohortId, CohortDef>;
   products: Record<ProductTypeId, ProductState>;
