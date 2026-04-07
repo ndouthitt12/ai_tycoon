@@ -1,0 +1,203 @@
+[v0.02.1]
+
+- The player should be able to have multiple model types available for consumers and B2B API. Currently they can only have one active at a time.
+- The player should be able to "upgrade" their current models by training them, increasing memory size, and increasing parameters.
+    - When upgrading, they should be able to change the name or increase the model number version.
+
+[v0.02.2]
+
+- When you're upgrading the model, the memory and parameter expansion should start from the previous model's values, so you can upgrade them.
+    - Currently you're not able to really upgrade them much.
+- The player should also be able to expand the token context window.
+- The player can currently see the market standard, but they should see how their models compare to the market standard.
+
+[v0.02.4]
+
+- The player should be able to set different prices for different models.
+- The player should be able to set the goals of each model, whether it's for speed, accuracy, reasoning, agentic, (create other categories too).
+    - They should be able to create models that focus on all aspects, or just one at a time, or a few so they have different models that sepcialize in different categories.
+- Players should be able to increment versions by 0.1 if they'd like to.
+
+[v0.03.1]
+
+- Currently when upgrading a current model, it defaults to "x.1", but if the user accidentally increases the model number and wants to go back, it won't let them.
+    - Allow the user to enter any number that's greater than the previous version number, even if it's 0.001 greater.
+    - Still default to +0.1 though.
+- Allow the user to build datacenters and set how many cloud pods will be included in the data center. The more pods, the more expensive the build will be.
+
+[v0.03.2]
+
+- Make it to where the "Executive Command" section of the page is sticky, so players don't have to keep scrolling up to advance the month.
+- Have the Speed, Reasoning, Coding, Accuracy, Agentic, and Multimodal ratings be from 1-99.
+    - Increasing these ratings should have a exponential effect on the cost.
+- Have a tab within the Market tab that shows a table containing all of the models on the market and their ratings.
+- When purchasing datasets, it should give you an option of the size of the dataset you're purchasing. The larger the size, the more expensive.
+    - You should also be able to see the amount of total data each model is trained on.
+    - Purchasing more datasets will increase the amount of parameters possible to upgrade.
+    - When upgrading a model, it'll start with the same amount of datasets that the previous model has.
+- Hiring Researchers should have a more clear impact on the development of the model.
+
+[v0.03.3]
+
+Change the cards under the "Compute Need" slider to be in a table format.
+
+Like this:
+
+Model Forecasts:
+Metric,Value
+Duration,8 mo
+Capability,109
+Inference,2.2 (Lower is better)
+Trust,67
+Failure Risk,26%
+
+Resource Impact:
+Metric,Value
+Research Lift,+15 (4 researchers)
+Data Lift,+6 (3 units)
+Target Memory,32 GB
+Target Params,56.0B (Cap: 165.2B)
+Target Context,32K
+Equivalent Cost,$4.07M
+
+Change the Data Market section to be a table:
+
+Source,Status/Tag,Owned Units,Base Cost,Buy Small (+1),Buy Medium (+3),Buy Large (+6)
+Web Scrape,Cheap / Noisy,4 units,$250.0K,$250.0K,$675.0K,$1.35M
+Licensed,Exp. / Clean,5 units,$900.0K,$900.0K,$2.43M,$4.86M
+Synthesized,Prior Model,0 units,$650.0K,Locked,Locked,Locked
+
+Condense the "Buy" columns into one column though. It should have a dropdown menu to select between the different sizes, and a "Purchase" button next to it.
+
+When the user purchases it, it should keep the same value so they don't have to keep selecting the same thing over and over again when buying multiple.
+
+[v0.03.5]
+
+Have the "Model Forecasts" and "Resource Impact" tables stack on top of each other. Not next to each other.
+
+Going forward, avoid building cluttered and busy UI where possible.
+
+Change the "Status/Tag" column in the Data Market table to fit cleaner in the table.
+
+Also widen the page overall on all tabs. It's getting too cramped overall.
+
+[v0.04.0]
+
+- Remove the cap of 99 for the Model Goals ratings. Change the values to be small input boxes that can be increased by using the down or up arrow.
+    - There should be no cap for the player or the competitor companies.
+- By default, increasing the values in the Model Goals should increase the development costs in the following way:
+    - Speed should increase development costs by $0.5m per point + 0.5% of the total cost.
+    - Accuracy should increase by $1.2m per point + 1% of the total cost.
+    - Reasoning should have a $3.5m per point increase + 3.5% of the total cost.
+    - Agentic should have a $5.5m per point increase + 4% of the total cost.
+    - Coding should have a $1.8m per point increase + 2% of the total cost.
+    - Multimodal should have a $4m per point increase + 3% of the total cost.
+- These values should apply to competitor companies too.
+- Add 10 competitor companies
+- Researchers should reduce the cost of development by a random amount between 0.1% - 0.45% per researcher staffed. This amount should be random per model.
+- Add an Admin tab where the player can do the following:
+    - Add a custom amount to their current capital, in millions.
+    - Adjust the cost per point of the Model Goals attributes, and the % of the costs for each.
+        - These adjustments will impact competitor companies too.
+
+[v0.05]
+
+- Add the ability to train your engineers to increase the % impact they have in reducing the failure risk
+    - The training cost should be a random amount between $8k - $15k per Engineer
+
+[v0.06]
+
+- Give the user the ability to shutdown a model when it's in development.
+- Allow the user to branch off existing models.
+    - So if I have a model that I want to use as a "base" and then have it specialize in Agentic or Speed, then I should be able to do that and adjust the name.
+- Remove the cap for Upgrade Paths.
+- Inference Optimization should increase the amount of memory possible.
+- Increasing the memory should increase the conext window limit.
+- The limits of memory, parameters, and context window should be visible above the input box.
+
+[v0.07]
+
+- Hiring engineers should reduce the Duration time. About 0.1 months per engineer.
+- Have it to where 30% of the Equivalent Cost is taken out of the player's cash upon launching the model, and the rest of it being deducted monthly until it's ready to launch.
+- A model's overall capability rating should be the current rating + the averages of the Model Goals.
+- If a model's compute exceeds the amount of serving pods available, it should cost the player $2.5m per pod that exceeds the amount available.
+    - If a model's training pods exceeds the amount of training pods available, it should cost the player $1.0m per pod that exceeds the amount.
+
+[v0.08]
+
+- When upgrading a model, the cost should come from the values added from the original.
+
+[v0.09]
+
+- In the Model Benchmark table, add a column that shows the total development cost (equivalent cost).
+- Make the competitors more competitive and aggressive.
+- Have a subtab in the Market page that displays all the companies and their cash, revenue in the previous year, profit in the previous year, and their top model, and average capability rating.
+- Remove any price limits in the overview page.
+- Adjust customer purchase behavior:
+    - Customers should be more likely to purchase or subscribe to models that are more recent.
+    - A model's capability rating compared to market should influence purchase behavior too.
+
+[v0.10]
+
+- Competitors should release new models, upgrade models, and release specialized branched models.
+- The Model Benchmarks table should have a column that displays the release month of the model.
+- The Capability modifier for competitors should be a multiplier.
+- Add a tab in the Overview page that has a table of each model that the player's company has released:
+    - It should show the name, release month, development cost, revenue generated in total, previous month's revenue generated, previous month's acquisition, and previous month's churn.
+
+
+
+[v0.11]
+
+- Give the option to sort the Companies table
+- User bases should be divided into:
+    - Those that favor speed
+    - Those that favor accuracy
+    - Those that favor coding
+    - Those that favor agentic
+    - Those that favor mutlimodal
+    - Those that favor reasoning
+    - And those that favor a combination of any of the categories (2-6)
+- When clicking on a model in the model benchmark table or in the released models table, it should display the % of each userbase type that is subscribed to the model.
+    - Behavior should be to where if there's a group that favors coding, over some other aspect, they'll want to use whichever model on the market is rated highest.
+
+[v0.11]
+
+- Competitors should release models much less often.
+    - Upgraded models:
+        - Aggressive competitors should release with 3 - 12 month development periods.
+        - Balanced should have 6 - 16 month periods.
+        - Disciplines should have 12 - 16 month periods.
+    - Branch models:
+        - Aggressive competitors should release with 6 - 12 month development periods.
+        - Balanced should have 9 - 16 month periods.
+        - Disciplines should have 12 - 16 month periods.
+
+[v0.12]
+
+- Competitors should only be able to develop models that fit within their cash amount.
+    - Currently competitors will create models that cost billions more than what they currently have in cash, and they'll do it over and over again.
+    - Competitor development cost should deduct from their cash balance. Their revenue should add to their cash balance.
+
+[v0.13]
+
+- In the Strategy tab, allow the user to set a marketing budget via input box (millions) that'll have a direct impact on monthly acquisition across all of the player's models.
+- Adjust the API pricing to be based on $ per million tokens.
+    - Start tracking token usage as well.
+- Add a column in the Released Models table to show previous month total users.
+    - The previous month churn, and previous month acquisition should impact this.
+- The player raising the price or lowering the price should also impact acquisition and churn.
+- Add an option in the Admin tab to allow the user to adjust a modifier for monthly users that'll multiply that number against monthly users for all companies.
+
+[v0.13.1]
+
+- Change the marketing acquisition formula to be based off of this instead: 
+    - Effective CAC = Base CAC * (1 + ln(1 + (Spend in Millions / Alpha)))
+
+[v0.13.2]
+
+- Change the "Spend Curve" value in the Commercial Controls section to display the multiplier based on the spending
+
+[v0.14]
+
+- It should 

@@ -1,0 +1,26 @@
+id,name,budgetMillions,versionBase,sizeKey,dataTier,speed,accuracy,reasoning,agentic,coding,multimodal,creativity,alignment,multilingual,recall,compression
+titan,Titan Frontier,240,4.2,frontier,licensed,84,122,138,104,92,116,90,110,80,130,70
+nimbus,Nimbus Systems,195,8.4,large,licensed,146,98,86,91,88,123,85,95,75,90,80
+forge,Forge Open,110,12.1,large,web,118,77,82,73,142,69,110,60,95,85,90
+verge,Verge Logic,88,5.7,medium,licensed,72,104,127,88,66,74,80,120,70,95,70
+helix,Helix Cloud AI,132,6.9,large,licensed,99,111,103,96,84,102,90,110,120,105,80
+atlasworks,AtlasWorks,76,3.4,medium,web,92,68,58,61,124,48,70,50,60,70,125
+polaris,Polaris Agents,160,7.1,large,licensed,88,96,112,149,79,84,80,105,85,115,85
+echo,Echo Search,92,9.3,medium,licensed,135,89,76,54,58,94,85,85,130,80,95
+lattice,Lattice Studio,118,4.8,large,synthesized,71,92,104,82,64,152,130,90,85,95,70
+cinder,Cinder Code,104,10.5,large,licensed,76,85,94,90,166,61,65,75,60,110,140
+monolith,Monolith Compute,20000,1.0,frontier,licensed,120,110,150,110,105,100,115,120,115,145,100
+apex,Apex Intelligence,8500,2.5,frontier,licensed,110,140,160,115,120,110,105,130,110,120,95
+quantum,Quantum Cognitive,3200,3.1,frontier,licensed,130,125,145,135,115,125,120,115,130,135,105
+nexus,Nexus Labs,2100,5.6,frontier,licensed,105,115,140,125,125,130,110,125,125,125,95
+vanguard,Vanguard AI,650,4.3,large,synthesized,95,105,110,95,95,115,90,105,100,105,85
+horizon,Horizon Learning,480,8.2,large,licensed,110,100,105,110,90,100,95,110,115,95,95
+spark,Spark Logic,145,2.7,medium,web,85,90,85,75,80,95,85,80,90,85,80
+ether,Ether Models,95,1.5,medium,synthesized,90,80,80,70,85,90,100,85,85,90,75
+cortex,Cortex Core,45,2.1,small,web,70,60,50,55,75,45,65,70,55,60,85
+zenith,Zenith Systems,1800,7.8,frontier,licensed,125,135,135,145,120,140,135,140,135,130,110
+pulsar,Pulsar Analytics,280,6.4,large,licensed,100,110,120,100,110,110,105,115,105,100,95
+orion,Orion Open,120,3.8,large,web,95,85,75,65,115,85,100,70,90,80,95
+flare,Flare Tech,55,1.2,small,web,85,55,55,45,65,40,75,65,70,55,80
+lumen,Lumen Intelligence,310,4.9,large,synthesized,95,100,115,105,95,110,110,105,95,110,90
+nova,Nova Agents,165,5.1,medium,licensed,80,95,105,130,100,90,85,100,95,95,85
