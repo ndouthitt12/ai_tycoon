@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 
 import { MODEL_GOALS, PRODUCT_TYPES } from "../game/defs";
-import { formatVersion, getMarketComparison, getModelById, money, monthLabel, pct, formatPods } from "../game/sim";
-import { CohortId, GameState, ProductTypeId } from "../game/types";
+import { formatVersion, getMarketComparison, getModelById, money, monthLabel, pct, formatPods, formatBigParams, formatBigMemory, formatBigContext } from "../game/sim";
+import { CohortId, GameState, ProductTypeId, SubscriptionPlan } from "../game/types";
 import { Badge, Button, EmptyState, MiniSparkline, Panel, SegmentedControl, StatRow, Tone } from "../components/ui";
 
 function getTrendPoints(points: number[], current: number) {
@@ -134,7 +134,7 @@ function ProductModelCard({
             <Badge tone={marketTone}>{marketLabel}</Badge>
           </div>
           <div className="mt-2 text-xs text-slate-500">
-            {memorySize} GB / {parameterScale}B params / {contextWindow}K ctx
+            {formatBigMemory(memorySize)} / {formatBigParams(parameterScale)} params / {formatBigContext(contextWindow)} ctx
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {goals.map(([goalId, weight]) => (
@@ -205,6 +205,9 @@ export function OverviewScreen({
   arr,
   onAttachModel,
   onUpdateProductPrice,
+  onUpdateSubscriptionPlan,
+  onCreateSubscriptionPlan,
+  onDeleteSubscriptionPlan,
   onRaiseFunding,
   onRestart,
 }: {
@@ -212,6 +215,9 @@ export function OverviewScreen({
   arr: number;
   onAttachModel: (productKey: ProductTypeId, modelId: string) => void;
   onUpdateProductPrice: (productKey: ProductTypeId, value: string, modelId?: string) => void;
+  onUpdateSubscriptionPlan: (planId: string, patch: Partial<SubscriptionPlan>) => void;
+  onCreateSubscriptionPlan: () => void;
+  onDeleteSubscriptionPlan: (planId: string) => void;
   onRaiseFunding: () => void;
   onRestart: () => void;
 }) {
@@ -353,7 +359,7 @@ export function OverviewScreen({
                               priceValue={product.modelPrices[String(model.id)] ?? product.price}
                               priceUnitLabel={productDef.priceUnitLabel}
                               step={productDef.step}
-                              onPriceChange={(value) => onUpdateProductPrice(activeProduct, value, String(model.id))}
+                              onPriceChange={activeProduct === "api" ? (value) => onUpdateProductPrice(activeProduct, value, String(model.id)) : undefined}
                             />
                           );
                         })}
@@ -395,7 +401,7 @@ export function OverviewScreen({
                                 <Badge tone={comparison.tone}>{comparison.label}</Badge>
                               </div>
                               <div className="mt-2 text-xs text-slate-500">
-                                {option.memorySize} GB / {option.parameterScale}B params / {option.contextWindow}K ctx
+                                {formatBigMemory(option.memorySize)} / {formatBigParams(option.parameterScale)} params / {formatBigContext(option.contextWindow)} ctx
                               </div>
                               <div className="mt-3 flex flex-wrap gap-1.5">
                                 {goals.map(([goalId, weight]) => (
@@ -413,20 +419,72 @@ export function OverviewScreen({
                 </div>
 
                 <div className="space-y-4">
-                  <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Deployment Defaults</div>
-                    <div className="mt-1 text-sm text-slate-500">New models inherit this price until you override them.</div>
-                    <label className="mt-4 block text-sm">
-                      <div className="mb-1 text-slate-400">Default Price For New Models ({productDef.priceUnitLabel})</div>
-                      <input
-                        type="number"
-                        step={productDef.step}
-                        value={product.price}
-                        onChange={(event) => onUpdateProductPrice(activeProduct, event.target.value)}
-                        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
-                      />
-                    </label>
-                  </div>
+                  {activeProduct === "api" ? (
+                    <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
+                      <div className="text-sm font-medium text-slate-300">Deployment Defaults</div>
+                      <div className="mt-1 text-sm text-slate-500">New models inherit this price until you override them.</div>
+                      <label className="mt-4 block text-sm">
+                        <div className="mb-1 text-slate-400">Default Price For New Models ({productDef.priceUnitLabel})</div>
+                        <input
+                          type="number"
+                          step={productDef.step}
+                          value={product.price}
+                          onChange={(event) => onUpdateProductPrice(activeProduct, event.target.value)}
+                          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium text-slate-300">Subscription Plans</div>
+                        <Button variant="ghost" onClick={onCreateSubscriptionPlan} className="px-2 py-1 text-xs">
+                          + New Plan
+                        </Button>
+                      </div>
+                      <div className="mt-4 space-y-4">
+                        {product.subscriptionPlans?.map(plan => (
+                          <div key={plan.id} className="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
+                            <div className="flex justify-between items-start mb-2">
+                              <input
+                                className="bg-transparent font-medium text-slate-100 outline-none w-32 border-b border-transparent focus:border-slate-600 focus:bg-slate-950"
+                                value={plan.name}
+                                onChange={(e) => onUpdateSubscriptionPlan(plan.id, { name: e.target.value })}
+                              />
+                              <button onClick={() => onDeleteSubscriptionPlan(plan.id)} className="text-rose-400 opacity-60 hover:opacity-100 text-xs">
+                                Remove
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 mb-3">
+                              <label className="text-xs">
+                                <div className="text-slate-500 mb-1">Price/mo</div>
+                                <input
+                                  type="number"
+                                  className="w-full rounded bg-slate-950 px-2 py-1 text-slate-100 outline-none border border-slate-800"
+                                  value={plan.price || 0}
+                                  onChange={(e) => onUpdateSubscriptionPlan(plan.id, { price: Number(e.target.value) || 0 })}
+                                />
+                              </label>
+                              <label className="text-xs">
+                                <div className="text-slate-500 mb-1">Tokens (K)</div>
+                                <input
+                                  type="number"
+                                  className="w-full rounded bg-slate-950 px-2 py-1 text-slate-100 outline-none border border-slate-800"
+                                  value={(plan.tokenLimitMillions || 0) * 1000}
+                                  onChange={(e) => onUpdateSubscriptionPlan(plan.id, { tokenLimitMillions: (Number(e.target.value) || 0) / 1000 })}
+                                />
+                              </label>
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400 space-y-1">
+                              <div className="flex justify-between"><span>Subscribers</span><span className="text-slate-300">{plan.subscribers.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span></div>
+                              <div className="flex justify-between"><span>Revenue</span><span className="text-slate-300">{money(plan.revenue)}</span></div>
+                              <div className="flex justify-between"><span>Usage (M)</span><span className="text-slate-300">{plan.tokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
                     <div className="text-sm font-medium text-slate-300">Channel Readout</div>

@@ -5,9 +5,13 @@ import {
   BOARD_DIRECTIVES,
   COMPETITOR_COMPANIES,
   COMPETITOR_STRATEGIES,
+  createEmptyCohortSubscriberMap,
+  RELIABILITY_TIER_IDS,
+  RELIABILITY_TIERS,
   DATA_TIERS,
   DATASET_PACKS,
   DEFAULT_GOAL_ECONOMICS,
+  GLOBAL_COHORT_IDS,
   GLOBAL_COHORTS,
   MODEL_SIZES,
   MONTHS,
@@ -37,9 +41,11 @@ import {
   PendingBoardReview,
   PendingEvent,
   ProductState,
+  SubscriptionPlan,
   ProductTypeId,
   RoleId,
   RivalId,
+  ReliabilityTierId,
   TrainingConfig,
   UpgradeId,
 } from "./types";
@@ -57,6 +63,7 @@ function randInt(min: number, max: number) {
 }
 
 export function money(value: number) {
+  if (isNaN(value)) return "$0";
   const sign = value < 0 ? "-" : "";
   const abs = Math.abs(value);
   if (abs >= 1_000_000_000_000) return `${sign}$${(abs / 1_000_000_000_000).toFixed(2)}T`;
@@ -77,6 +84,27 @@ export function formatPods(value: number) {
 
 export function pct(value: number) {
   return `${(value * 100).toFixed(0)}%`;
+}
+
+export function formatBigParams(value: number) {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}Qi`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}Qa`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}T`;
+  return `${value.toFixed(1)}B`;
+}
+
+export function formatBigMemory(value: number) {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}EB`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(0)}PB`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}TB`;
+  return `${value.toFixed(0)} GB`;
+}
+
+export function formatBigContext(value: number) {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}T`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(0)}B`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}M`;
+  return `${value.toFixed(0)}K`;
 }
 
 export function getLoanTerms(principal: number, term: number) {
@@ -211,13 +239,14 @@ function getCapabilityFromCurrentRating(currentRating: number, goals: TrainingCo
   return Math.round(Math.max(1, currentRating + getGoalAverage(goals)));
 }
 
-function getDefaultCompetitorAdminState() {
+function getDefaultCompetitorAdminState(competitorId?: string) {
+  const company = competitorId ? getCompetitorCompanyDefinition(competitorId) : null;
   return {
     capitalAddedMillions: 0,
-    behavior: "balanced" as const,
-    strategy: "balanced" as const,
-    capabilityModifier: 1,
-    goalModifiers: {},
+    behavior: company?.defaultBehavior ?? "balanced",
+    strategy: company?.defaultStrategy ?? "balanced",
+    capabilityModifier: company?.defaultCapabilityModifier ?? 1,
+    goalModifiers: { ...(company?.defaultGoalModifiers ?? {}) },
   };
 }
 
@@ -240,7 +269,7 @@ function getMonthlyUserMultiplier(game: Pick<GameState, "monthlyUserMultiplier">
 }
 
 function getCompetitorAdminState(game: GameState, competitorId: string) {
-  return game.competitorAdmin[competitorId] ?? getDefaultCompetitorAdminState();
+  return game.competitorAdmin[competitorId] ?? getDefaultCompetitorAdminState(competitorId);
 }
 
 function getStrategicGoalOverlay(strategy: GameState["competitorAdmin"][string]["strategy"], goalId: ModelGoalId) {
@@ -435,7 +464,7 @@ function buildCompetitorRelease(
   const economicGoals = getCompetitorEconomicGoals(pureDisplayGoals, releaseKind, admin.goalModifiers);
   const baselineGoals = getCompetitorBaselineEconomicGoals(purePreviousGoals ?? null, releaseKind, admin.goalModifiers);
   const anchorBudget =
-    company.budgetMillions *
+    company.startingCapitalMillions *
     1000000 *
     (releaseKind === "new" ? 0.5 : releaseKind === "branch" ? 0.34 : 0.28) *
     behavior.budgetGrowthMultiplier;
@@ -443,7 +472,7 @@ function buildCompetitorRelease(
     competitor.cash,
     Math.max(
       8000000,
-      anchorBudget + Math.max(0, competitor.cash - company.budgetMillions * 1000000) * 0.16,
+      anchorBudget + Math.max(0, competitor.cash - company.startingCapitalMillions * 1000000) * 0.16,
     ),
   );
   if (spendCap < 6000000) return null;
@@ -548,14 +577,8 @@ function buildCompetitorRelease(
       releaseMonth: monthBuilt,
       chatPrice,
       apiPrice,
-      subscribersByCohort: {
-        casual: 0,
-        developer: 0,
-        enterprise: 0,
-        global: 0,
-        power: 0,
-        efficiency: 0,
-      },
+      subscribersByCohort: createEmptyCohortSubscriberMap(),
+      reliability: Object.fromEntries(RELIABILITY_TIER_IDS.map(tier => [tier, Math.min(0.9, competitor.releaseIndex * 0.15 + (admin.strategy === "balanced" ? 0.3 : 0.5))])) as Record<ReliabilityTierId, number>,
     },
     totalCost,
     currentFamilyName,
@@ -567,10 +590,10 @@ function createInitialCompetitorCompanyState(
   company: CompetitorCompanyDefinition,
   companyIndex: number,
 ): GameState["competitorCompanies"][string] {
-  const admin = getDefaultCompetitorAdminState();
+  const admin = getDefaultCompetitorAdminState(company.id);
   const baseState: GameState["competitorCompanies"][string] = {
     id: company.id,
-    cash: company.budgetMillions * 1000000,
+    cash: company.startingCapitalMillions * 1000000,
     revenueHistory: [],
     profitHistory: [],
     models: [],
@@ -614,7 +637,7 @@ function updateCompetitorCompanies(game: GameState) {
     const capabilityPressure = clamp((playerTopCapability - topCapability) * 0.006, -0.05, 0.22);
     const competitorShareMultiplier = clamp(1 - capabilityPressure - playerRevenuePenetration, 0.5, 1.05);
     const monthlyRevenue = Math.round(
-      ((company.budgetMillions * 2800000 * behavior.revenueMultiplier + averageCapability * 420000 + topCapability * 180000) / 12) *
+      ((company.startingCapitalMillions * 2800000 * behavior.revenueMultiplier + averageCapability * 420000 + topCapability * 180000) / 12) *
       (competitor.models.length ? 1 : 0.4) *
       competitorShareMultiplier *
       getMonthlyUserMultiplier(game),
@@ -950,10 +973,12 @@ export function getProductComputeUsage(
   if (!metrics) return { demand: 0, tokensMillions: 0 };
 
   if (product.type === "chatbot") {
-    // Chatbot has abstract token usage, driven heavily by user growth and basic inference cost scale
+    const tokensPerPod = 50; // 50M tokens = 1 Pod
+    let demand = Math.ceil(product.tokenUsageMillions / tokensPerPod);
+    
     return {
-      demand: (product.activeUsers * metrics.inferenceCost) / 4300,
-      tokensMillions: 0,
+      demand: demand * metrics.inferenceCost,
+      tokensMillions: product.tokenUsageMillions,
     };
   }
 
@@ -1192,6 +1217,10 @@ function createDefaultProducts(): GameState["products"] {
       acquisition: 0,
       trust: 50,
       lastLaunchMonth: 0,
+      subscriptionPlans: [
+        { id: "free_tier", name: "Free Tier", price: 0, tokenLimitMillions: 100, subscribers: 0, revenue: 0, profit: 0, tokenUsageMillions: 0 },
+        { id: "pro_tier", name: "Pro Tier", price: 20, tokenLimitMillions: 5000, subscribers: 0, revenue: 0, profit: 0, tokenUsageMillions: 0 }
+      ]
     },
     api: {
       type: "api",
@@ -1352,7 +1381,7 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
     history: { revenue: [], profit: [], arr: [], trust: [], boardPressure: [] },
     goalEconomics: JSON.parse(JSON.stringify(DEFAULT_GOAL_ECONOMICS)),
     competitorAdmin: Object.fromEntries(
-      COMPETITOR_COMPANIES.map((company) => [company.id, getDefaultCompetitorAdminState()]),
+      COMPETITOR_COMPANIES.map((company) => [company.id, getDefaultCompetitorAdminState(company.id)]),
     ),
     competitorCompanies: Object.fromEntries(
       COMPETITOR_COMPANIES.map((company, index) => [
@@ -1517,9 +1546,19 @@ export function calculateRunPreview(game: GameState) {
     baseDevelopmentCost,
     baseModel?.goals ?? null,
   );
+  
+  let reliabilityDollarCost = 0;
+  RELIABILITY_TIER_IDS.forEach((tierId) => {
+    const tierDef = RELIABILITY_TIERS[tierId];
+    const val = game.trainingConfig.reliability[tierId];
+    if (val > 0) {
+      reliabilityDollarCost += tierDef.baseConstantMillions * 1000000 * Math.pow(1 / (1 - val), tierDef.exponent);
+    }
+  });
+
   const expectedResearchDiscountRate = game.headcount.researchers * 0.00275;
   const projectedEquivalentCost = Math.round(
-    (baseDevelopmentCost + goalDevelopmentCost.totalCost) * Math.max(0.1, 1 - expectedResearchDiscountRate),
+    (baseDevelopmentCost + goalDevelopmentCost.totalCost + reliabilityDollarCost) * Math.max(0.1, 1 - expectedResearchDiscountRate),
   );
 
   return {
@@ -1699,29 +1738,63 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
     }
   });
 
+  if (game.products.chatbot.subscriptionPlans) {
+    game.products.chatbot.subscriptionPlans.forEach(plan => {
+      plan.subscribers = 0;
+      plan.revenue = 0;
+      plan.profit = 0;
+      plan.tokenUsageMillions = 0;
+    });
+  }
+
   const productDeltas = {
     chatbot: { users: 0, acq: 0, churn: 0, cost: 0, revenue: 0, prevUsers: game.products.chatbot.activeUsers },
     api: { users: 0, acq: 0, churn: 0, cost: 0, revenue: 0, prevUsers: game.products.api.activeUsers }
   };
 
-  const cohortApiAffinity: Record<CohortId, number> = { casual: 0.1, developer: 1.5, enterprise: 2.0, global: 0.8, power: 1.2, efficiency: 1.5 };
-  const cohortChatbotAffinity: Record<CohortId, number> = { casual: 2.0, developer: 0.8, enterprise: 0.2, global: 1.5, power: 1.2, efficiency: 0.8 };
-
-  Object.values(game.globalCohorts).forEach((cohort) => {
+  GLOBAL_COHORT_IDS.forEach((cohortId) => {
+    const cohort = game.globalCohorts[cohortId];
+    if (!cohort) return;
     let totalAppeal = 0;
     const appealScores = contenders.map(contender => {
       const model = contender.model;
-      let baseAppeal = model.capability * cohort.baseCapabilityWeight;
+      if (contender.productType === "chatbot" && cohort.category !== "Consumer") return { contender, appeal: 0 };
+      if (contender.productType === "api" && cohort.category !== "Business") return { contender, appeal: 0 };
+
+      let weighted_reliability_score = 1.0;
+      Object.entries(cohort.reliabilityWeights).forEach(([tier, weight]) => {
+        weighted_reliability_score += (model.reliability[tier as ReliabilityTierId] || 0) * (weight as number);
+      });
+
+      let baseAppeal = (model.capability * weighted_reliability_score) * cohort.baseCapabilityWeight;
       Object.entries(cohort.weights).forEach(([goal, weight]) => {
-        baseAppeal += (model.goals[goal as ModelGoalId] || 0) * (weight as number);
+        if (weight > 0 && model.goals[goal as ModelGoalId] !== undefined) {
+          baseAppeal += model.goals[goal as ModelGoalId] * (weight as number) * 10;
+        }
       });
 
       let affinityMultiplier = 1.0;
-      if (contender.productType) {
-        affinityMultiplier = contender.productType === "chatbot" ? cohortChatbotAffinity[cohort.id] : cohortApiAffinity[cohort.id];
+      let evaluatedPrice = contender.price;
+      let currentPlan: SubscriptionPlan | null = null;
+      let neededTokensM = (cohort.sessionsPerMonth * cohort.tokensPerSession) / 1000000;
+      let usedTokensM = neededTokensM;
+
+      if (contender.isPlayer && contender.productType === "chatbot" && game.products.chatbot.subscriptionPlans?.length) {
+         const sortedPlans = [...game.products.chatbot.subscriptionPlans].sort((a,b) => (a.price || 0) - (b.price || 0));
+         // Find cheapest plan that fits needed tokens, or otherwise pick the biggest tier plan and cap usage.
+         const match = sortedPlans.find(p => (p.tokenLimitMillions || 0) >= (neededTokensM || 0));
+         if (match) {
+            currentPlan = match;
+            evaluatedPrice = currentPlan.price || 0;
+         } else {
+            currentPlan = sortedPlans[sortedPlans.length - 1]; // highest plan
+            evaluatedPrice = currentPlan.price || 0;
+            usedTokensM = currentPlan.tokenLimitMillions || 0; // soft cap limits
+            affinityMultiplier = 0.5; // penalty for low token limit vs what cohort demands
+         }
       }
 
-      const relativePrice = contender.price / 18.0;
+      const relativePrice = evaluatedPrice / 18.0;
       const expectedPrice = 1.0;
       const priceDelta = relativePrice - expectedPrice;
       const pricePenalty = Math.max(-10, priceDelta * 15 * cohort.priceSensitivity);
@@ -1730,10 +1803,10 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
       appeal *= contender.salesMultiplier;
       totalAppeal += appeal;
 
-      return { contender, appeal };
+      return { contender, appeal, currentPlan, usedTokensM, evaluatedPrice };
     });
 
-    appealScores.forEach(({ contender, appeal }) => {
+    appealScores.forEach(({ contender, appeal, currentPlan, usedTokensM, evaluatedPrice }) => {
       const targetShare = totalAppeal > 0 ? appeal / totalAppeal : 0;
       const targetUsers = cohort.population * targetShare;
       const currentUsers = contender.model.subscribersByCohort[cohort.id] || 0;
@@ -1748,10 +1821,19 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
         if (delta > 0) productDeltas[contender.productType].acq += delta;
         if (delta < 0) productDeltas[contender.productType].churn += Math.abs(delta);
 
-        const metrics = getBlendedModelMetrics(game, game.products[contender.productType]);
-        if (metrics) {
-          const tokensPerClient = contender.productType === "chatbot" ? 0 : 1.2;
-          productDeltas[contender.productType].revenue += nextUsers * contender.price;
+        let cWindowScale = Math.max(1, contender.model.contextWindow / 8); 
+        let contextScaledTokensM = usedTokensM * cWindowScale;
+
+        if (currentPlan) {
+           currentPlan.subscribers += nextUsers || 0;
+           currentPlan.revenue += (nextUsers || 0) * evaluatedPrice;
+           currentPlan.tokenUsageMillions += (nextUsers || 0) * (contextScaledTokensM || 0);
+           productDeltas[contender.productType].revenue += (nextUsers || 0) * evaluatedPrice;
+        } else {
+           const metrics = getBlendedModelMetrics(game, game.products[contender.productType]);
+           if (metrics) {
+             productDeltas[contender.productType].revenue += (nextUsers || 0) * evaluatedPrice;
+           }
         }
       }
       contender.model.subscribersByCohort[cohort.id] = nextUsers;
@@ -1765,6 +1847,10 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
     product.activeUsers = activeUsers;
     product.revenue = Math.max(0, Math.round(delta.revenue));
     product.acquisition = Math.round(delta.acq);
+
+    if (type === "chatbot" && product.subscriptionPlans) {
+      product.tokenUsageMillions = product.subscriptionPlans.reduce((sum, plan) => sum + plan.tokenUsageMillions, 0);
+    }
 
     const abstractChurn = Math.round(delta.churn) + Math.round(activeUsers * 0.02);
     product.churn = activeUsers > 0 ? Number((abstractChurn / (activeUsers + abstractChurn)).toFixed(3)) : 0;
@@ -2163,6 +2249,7 @@ export function launchRun(game: GameState) {
     lossSeverity: 0,
     eventTriggered: false,
     lossCurve: generateLossCurve(estimate.totalMonths),
+    reliability: { ...next.trainingConfig.reliability },
   };
 
   next.activeRuns.push(run);
@@ -2224,6 +2311,38 @@ export function attachModelToProduct(game: GameState, productKey: ProductTypeId,
   product.lastLaunchMonth = next.turn;
   addNotification(next, `${PRODUCT_TYPES[productKey].name} added model #${modelId} to its active lineup.`, "good");
   return next;
+}
+
+export function updateSubscriptionPlan(game: GameState, planId: string, patch: Partial<SubscriptionPlan>) {
+  const product = game.products.chatbot;
+  if (!product.subscriptionPlans) return game;
+  const target = product.subscriptionPlans.find(p => p.id === planId);
+  if (target) Object.assign(target, patch);
+  return { ...game };
+}
+
+export function createSubscriptionPlan(game: GameState) {
+  const product = game.products.chatbot;
+  if (!product.subscriptionPlans) product.subscriptionPlans = [];
+  const nextId = `plan_${Date.now()}`;
+  product.subscriptionPlans.push({
+    id: nextId,
+    name: "New Tier",
+    price: 0,
+    tokenLimitMillions: 50,
+    subscribers: 0,
+    revenue: 0,
+    profit: 0,
+    tokenUsageMillions: 0
+  });
+  return { ...game };
+}
+
+export function deleteSubscriptionPlan(game: GameState, planId: string) {
+  const product = game.products.chatbot;
+  if (!product.subscriptionPlans) return game;
+  product.subscriptionPlans = product.subscriptionPlans.filter(p => p.id !== planId);
+  return { ...game };
 }
 
 export function updateProductPrice(game: GameState, productKey: ProductTypeId, price: string, modelId?: string) {
@@ -2379,6 +2498,16 @@ export function advanceMonth(game: GameState) {
   }
 
   const next = copyGame(game);
+  
+  if (isNaN(next.cash)) next.cash = 1000000;
+  if (isNaN(next.lastMonth.revenue)) next.lastMonth.revenue = 0;
+  if (isNaN(next.lastMonth.profit)) next.lastMonth.profit = 0;
+  if (isNaN(next.products.chatbot.revenue)) next.products.chatbot.revenue = 0;
+  if (isNaN(next.products.api.revenue)) next.products.api.revenue = 0;
+  next.history.revenue = next.history.revenue.map(r => isNaN(r) ? 0 : r);
+  next.history.profit = next.history.profit.map(r => isNaN(r) ? 0 : r);
+  next.history.arr = next.history.arr.map(r => isNaN(r) ? 0 : r);
+
   const archetype = getArchetype(next);
   const effects = getDirectiveEffects(next);
 
@@ -2547,14 +2676,8 @@ export function advanceMonth(game: GameState) {
       monthBuilt: next.turn,
       sizeKey: run.sizeKey,
       dataTier: run.dataTier,
-      subscribersByCohort: {
-        casual: 0,
-        developer: 0,
-        enterprise: 0,
-        global: 0,
-        power: 0,
-        efficiency: 0,
-      },
+      subscribersByCohort: createEmptyCohortSubscriberMap(),
+      reliability: { ...run.reliability },
     };
     next.models.unshift(model);
     next.modelPerformance[String(model.id)] = createDefaultModelPerformance();

@@ -1,0 +1,5 @@
+archetypeId,mode,targetVersion,size,dataTier,computeNeed,name,targetMemorySize,targetParameterScale,targetContextWindow,trainingDataUnits,goal_speed,goal_accuracy,goal_reasoning,goal_agentic,goal_coding,goal_multimodal,goal_creativity,goal_alignment,goal_multilingual,goal_recall,goal_compression
+frontier_lab,new,1,large,licensed,16,Atlas,32,56,32,3,1,1,1,1,1,1,1,1,1,1,1
+consumer_ai_product_company,new,1,medium,licensed,12,Pulse,16,22,16,2,1,1,1,1,1,1,1,1,1,1,1
+enterprise_copilot_company,new,1,medium,licensed,10,Anchor,16,22,16,3,1,1,1,1,1,1,1,1,1,1,1
+open_source_challenger,new,1,medium,web,12,Relay,16,22,16,2,1,1,1,1,1,1,1,1,1,1,1

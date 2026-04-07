@@ -20,14 +20,20 @@ export type ModelGoalId =
   | "multilingual"
   | "recall"
   | "compression";
-export type CohortId = "casual" | "developer" | "enterprise" | "global" | "power" | "efficiency";
+export type CohortId = "casual" | "developer" | "global" | "power" | "efficiency" | "medical" | "law" | "government" | "education" | "tech" | "finance" | "manufacturing" | "retail";
+export type ReliabilityTierId = "syntax_extraction" | "semantic_generation" | "analytical_reasoning" | "complex_synthesis" | "bounded_agency" | "autonomous_workflow" | "frontier_reasoning";
+export type CohortCategory = "Consumer" | "Business";
 export interface CohortDef {
   id: CohortId;
   name: string;
+  category: CohortCategory;
   population: number;
   priceSensitivity: number;
   weights: Partial<Record<ModelGoalId, number>>;
+  reliabilityWeights: Record<ReliabilityTierId, number>;
   baseCapabilityWeight: number;
+  sessionsPerMonth: number;
+  tokensPerSession: number;
 }
 
 export interface Loan {
@@ -71,6 +77,17 @@ export interface NotificationItem {
   tone: NotificationTone;
 }
 
+export interface SubscriptionPlan {
+  id: string;
+  name: string;
+  price: number;
+  tokenLimitMillions: number;
+  subscribers: number;
+  revenue: number;
+  profit: number;
+  tokenUsageMillions: number;
+}
+
 export interface ProductState {
   type: ProductTypeId;
   modelIds: number[];
@@ -85,6 +102,7 @@ export interface ProductState {
   acquisition: number;
   trust: number;
   lastLaunchMonth: number;
+  subscriptionPlans?: SubscriptionPlan[];
 }
 
 export interface ModelState {
@@ -106,6 +124,7 @@ export interface ModelState {
   sizeKey: ModelSizeId;
   dataTier: DataTierId;
   subscribersByCohort: Record<CohortId, number>;
+  reliability: Record<ReliabilityTierId, number>;
 }
 
 export interface ModelPerformanceState {
@@ -146,6 +165,7 @@ export interface ActiveRun {
   lossSeverity: number;
   eventTriggered: boolean;
   lossCurve: number[];
+  reliability: Record<ReliabilityTierId, number>;
 }
 
 export interface PendingEventChoice {
@@ -237,6 +257,7 @@ export interface TrainingConfig {
   targetContextWindow: number;
   goals: Record<ModelGoalId, number>;
   trainingDataUnits: number;
+  reliability: Record<ReliabilityTierId, number>;
 }
 
 export interface GameState {
@@ -402,10 +423,14 @@ export interface ModelSizeDefinition {
 export interface CompetitorCompanyDefinition {
   id: string;
   name: string;
-  budgetMillions: number;
+  startingCapitalMillions: number;
   versionBase: number;
   sizeKey: ModelSizeId;
   dataTier: DataTierId;
+  defaultBehavior: CompetitorBehaviorId;
+  defaultStrategy: CompetitorStrategyId;
+  defaultCapabilityModifier: number;
+  defaultGoalModifiers: Partial<Record<ModelGoalId, number>>;
   goals: Record<ModelGoalId, number>;
 }
 
@@ -431,6 +456,7 @@ export interface CompetitorModelState {
   apiPrice: number | null;
   chatPrice: number | null;
   subscribersByCohort: Record<CohortId, number>;
+  reliability: Record<ReliabilityTierId, number>;
 }
 
 export interface CompetitorCompanyState {

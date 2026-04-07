@@ -29,13 +29,16 @@ import {
   updateCohortDef,
   updateGoalEconomics,
   updateProductPrice,
+  updateSubscriptionPlan,
+  createSubscriptionPlan,
+  deleteSubscriptionPlan,
   updateTrainingAllocation,
   updateTrainingConfig,
   hire,
   launchRun,
   takeLoan,
 } from "./game/sim";
-import { AppState, ArchetypeId, BoardDirectiveId, DataTierId, RoleId, ScreenId, UpgradeId } from "./game/types";
+import { AppState, ArchetypeId, BoardDirectiveId, DataTierId, RoleId, ScreenId, UpgradeId, SubscriptionPlan } from "./game/types";
 import { AppShell, Badge, Button, KpiCard, NavTab } from "./components/ui";
 import { AdminScreen } from "./screens/AdminScreen";
 import { ArchetypeSelection } from "./screens/ArchetypeSelection";
@@ -61,7 +64,7 @@ export default function AICompanyTycoonStep2() {
   const headcountTotal = game ? getHeadcountTotal(game) : 0;
   const payroll = game ? getPayroll(game) : 0;
   const runwayMonths = game ? getRunwayMonths(game) : 0;
-  const arr = game ? game.lastMonth.revenue * 12 : 0;
+  const arr = game ? (game.lastMonth.revenue || 0) * 12 : 0;
 
   function selectArchetype(archetypeId: ArchetypeId) {
     setApp({
@@ -176,6 +179,9 @@ export default function AICompanyTycoonStep2() {
               onUpdateProductPrice={(productKey, value, modelId) =>
                 updateGame((current) => updateProductPrice(current, productKey, value, modelId))
               }
+              onUpdateSubscriptionPlan={(planId, patch) => updateGame((current) => updateSubscriptionPlan(current, planId, patch))}
+              onCreateSubscriptionPlan={() => updateGame(createSubscriptionPlan)}
+              onDeleteSubscriptionPlan={(planId) => updateGame((current) => deleteSubscriptionPlan(current, planId))}
               onRaiseFunding={() => updateGame(raiseFunding)}
               onRestart={restartToSelection}
             />

@@ -1,7 +1,10 @@
 import { useState } from "react";
 
-import { DATA_TIERS, MODEL_GOALS, MODEL_SIZES, ROLE_LABELS, SALARIES, UPGRADES } from "../game/defs";
+import { DATA_TIERS, MODEL_GOALS, MODEL_SIZES, RELIABILITY_TIERS, ROLE_LABELS, SALARIES, UPGRADES } from "../game/defs";
 import {
+  formatBigContext,
+  formatBigMemory,
+  formatBigParams,
   formatVersion,
   getEngineerFailureRiskReduction,
   getEngineerTrainingCostRange,
@@ -308,9 +311,9 @@ export function LabScreen({
                         <div className="text-sm text-slate-400">Base Snapshot</div>
                         <div className="mt-1 flex flex-wrap gap-2">
                           <Badge tone="good">v{formatVersion(baseModel.version)}</Badge>
-                          <Badge tone="default">{baseModel.memorySize} GB</Badge>
-                          <Badge tone="warning">{baseModel.parameterScale}B params</Badge>
-                          <Badge tone="default">{baseModel.contextWindow}K ctx</Badge>
+                          <Badge tone="default">{formatBigMemory(baseModel.memorySize)}</Badge>
+                          <Badge tone="warning">{formatBigParams(baseModel.parameterScale)} params</Badge>
+                          <Badge tone="default">{formatBigContext(baseModel.contextWindow)} ctx</Badge>
                           <Badge tone="default">{baseModel.trainingDataUnits} data units</Badge>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2">
@@ -430,9 +433,9 @@ export function LabScreen({
               <label className="text-sm">
                 <div className="mb-1 flex items-center justify-between text-slate-400">
                   <span>Memory</span>
-                  <span>Limit {maxMemorySize} GB</span>
+                  <span>Limit {formatBigMemory(maxMemorySize)}</span>
                 </div>
-                <div className="mb-1 text-xs text-slate-500">Base {baseMemorySize} GB / Target {game.trainingConfig.targetMemorySize} GB</div>
+                <div className="mb-1 text-xs text-slate-500">Base {formatBigMemory(baseMemorySize)} / Target {formatBigMemory(game.trainingConfig.targetMemorySize)}</div>
                 <input
                   type="number"
                   min={baseMemorySize}
@@ -451,10 +454,10 @@ export function LabScreen({
               <label className="text-sm">
                 <div className="mb-1 flex items-center justify-between text-slate-400">
                   <span>Parameters</span>
-                  <span>Limit {maxParameterScale.toFixed(1)}B</span>
+                  <span>Limit {formatBigParams(maxParameterScale)}</span>
                 </div>
                 <div className="mb-1 text-xs text-slate-500">
-                  Base {baseParameterScale.toFixed(1)}B / Target {game.trainingConfig.targetParameterScale.toFixed(1)}B
+                  Base {formatBigParams(baseParameterScale)} / Target {formatBigParams(game.trainingConfig.targetParameterScale)}
                 </div>
                 <input
                   type="number"
@@ -477,9 +480,9 @@ export function LabScreen({
               <label className="text-sm">
                 <div className="mb-1 flex items-center justify-between text-slate-400">
                   <span>Context Window</span>
-                  <span>Limit {maxContextWindow}K</span>
+                  <span>Limit {formatBigContext(maxContextWindow)}</span>
                 </div>
-                <div className="mb-1 text-xs text-slate-500">Base {baseContextWindow}K / Target {game.trainingConfig.targetContextWindow}K</div>
+                <div className="mb-1 text-xs text-slate-500">Base {formatBigContext(baseContextWindow)} / Target {formatBigContext(game.trainingConfig.targetContextWindow)}</div>
                 <input
                   type="number"
                   min={baseContextWindow}
@@ -541,6 +544,54 @@ export function LabScreen({
               </div>
               <div className="mt-3 text-xs text-slate-500">
                 Goal ratings are uncapped. Higher values compound development cost through fixed dollar increases and percentage-based cost multipliers.
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-sm font-medium text-slate-200">Model Reliability</div>
+                  <div className="mt-1 text-sm text-slate-400">Reduce hallucinations and failures. Expanding reliability past 0.90 is exponentially costly.</div>
+                </div>
+              </div>
+              
+              <div className="mt-4 space-y-4">
+                {Object.values(RELIABILITY_TIERS).map((tier) => {
+                  const val = game.trainingConfig.reliability[tier.id] || 0;
+                  const estimatedCost = val > 0 
+                    ? tier.baseConstantMillions * Math.pow(1 / (1 - val), tier.exponent)
+                    : 0;
+                    
+                  return (
+                    <div key={tier.id} className="rounded-xl border border-slate-800/80 bg-slate-900/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div className="w-48 text-sm font-medium text-slate-200">{tier.name}</div>
+                        <div className="flex flex-1 items-center gap-3">
+                          <input
+                            type="range"
+                            min="0"
+                            max="0.99"
+                            step="0.01"
+                            value={val}
+                            onChange={(e) => onUpdateTrainingConfig({
+                              reliability: {
+                                ...game.trainingConfig.reliability,
+                                [tier.id]: Number(e.target.value)
+                              }
+                            })}
+                            className="w-full"
+                          />
+                          <div className="w-12 text-right text-sm text-slate-400">
+                            {val.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="w-24 text-right text-sm text-slate-400">
+                          {estimatedCost > 0 ? `+${money(estimatedCost * 1000000)}` : '-'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 

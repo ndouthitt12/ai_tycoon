@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 
 import { RIVALS } from "../game/defs";
-import { formatVersion, getMarketCompanyTable, getMarketModelTable, money, monthLabel } from "../game/sim";
+import { formatBigContext, formatBigMemory, formatBigParams, formatVersion, getMarketCompanyTable, getMarketModelTable, money, monthLabel } from "../game/sim";
 import { CohortId, GameState } from "../game/types";
 import { Badge, EmptyState, Panel, SegmentedControl, StatRow } from "../components/ui";
 
@@ -393,9 +393,9 @@ export function MarketScreen({ game }: { game: GameState }) {
                         <td className="px-4 py-3 font-mono">{money(model.developmentCost)}</td>
                         <td className="px-4 py-3 font-mono text-slate-400">{model.owner === "Your Company" ? (game.products.chatbot.modelPrices[model.id as number] ? `$${game.products.chatbot.modelPrices[model.id as number]}/mo` : "---") : (model as any).chatPrice ? `$${(model as any).chatPrice}/mo` : "---"}</td>
                         <td className="px-4 py-3 font-mono text-slate-400">{model.owner === "Your Company" ? (game.products.api.modelPrices[model.id as number] ? `$${game.products.api.modelPrices[model.id as number].toFixed(2)}/1M` : "---") : (model as any).apiPrice ? `$${(model as any).apiPrice.toFixed(2)}/1M` : "---"}</td>
-                        <td className="px-4 py-3 font-mono">{model.memorySize} GB</td>
-                        <td className="px-4 py-3 font-mono">{model.parameterScale.toFixed(1)}B</td>
-                        <td className="px-4 py-3 font-mono">{model.contextWindow}K</td>
+                        <td className="px-4 py-3 font-mono">{formatBigMemory(model.memorySize)}</td>
+                        <td className="px-4 py-3 font-mono">{formatBigParams(model.parameterScale)}</td>
+                        <td className="px-4 py-3 font-mono">{formatBigContext(model.contextWindow)}</td>
                         <td className="px-4 py-3 font-mono">{model.goals.speed}</td>
                         <td className="px-4 py-3 font-mono">{model.goals.accuracy}</td>
                         <td className="px-4 py-3 font-mono">{model.goals.reasoning}</td>

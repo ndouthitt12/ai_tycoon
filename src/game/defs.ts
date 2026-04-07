@@ -3,6 +3,8 @@ import {
   ArchetypeDefinition,
   BoardDirectiveId,
   BoardDirectiveDefinition,
+  CohortCategory,
+  CohortDef,
   CohortId,
   CompetitorCompanyDefinition,
   CompetitorBehaviorId,
@@ -21,10 +23,14 @@ import {
   RivalId,
   RivalDefinition,
   RoleId,
+  TrainingConfig,
+  ReliabilityTierId,
   UpgradeId,
   UpgradeDefinition,
 } from "./types";
+import cohortsRaw from "./global-cohorts.csv?raw";
 import competitorsRaw from "./competitors.csv?raw";
+import startingModelsRaw from "./starting-models.csv?raw";
 
 export const BASE_BOARD_PRESSURE = 18;
 export const BASE_OPS_COST = 60000;
@@ -94,6 +100,38 @@ export const DATASET_PACKS: Record<DatasetPackSizeId, DatasetPackDefinition> = {
   },
 };
 
+const CSV_MODEL_GOAL_IDS: ModelGoalId[] = [
+  "speed",
+  "accuracy",
+  "reasoning",
+  "agentic",
+  "coding",
+  "multimodal",
+  "creativity",
+  "alignment",
+  "multilingual",
+  "recall",
+  "compression",
+];
+
+export interface ReliabilityTierDefinition {
+  id: ReliabilityTierId;
+  name: string;
+  baseConstantMillions: number;
+  exponent: number;
+}
+
+export const RELIABILITY_TIERS: Record<ReliabilityTierId, ReliabilityTierDefinition> = {
+  syntax_extraction: { id: "syntax_extraction", name: "Syntax & Extraction", baseConstantMillions: 13, exponent: 1.0 },
+  semantic_generation: { id: "semantic_generation", name: "Semantic Generation", baseConstantMillions: 21, exponent: 1.2 },
+  analytical_reasoning: { id: "analytical_reasoning", name: "Analytical Reasoning", baseConstantMillions: 125, exponent: 2.2 },
+  complex_synthesis: { id: "complex_synthesis", name: "Complex Synthesis", baseConstantMillions: 275, exponent: 2.5 },
+  bounded_agency: { id: "bounded_agency", name: "Bounded Agency", baseConstantMillions: 400, exponent: 2.7 },
+  autonomous_workflow: { id: "autonomous_workflow", name: "Autonomous Workflow", baseConstantMillions: 800, exponent: 3.0 },
+  frontier_reasoning: { id: "frontier_reasoning", name: "Frontier Reasoning", baseConstantMillions: 3000, exponent: 3.8 },
+};
+export const RELIABILITY_TIER_IDS = Object.keys(RELIABILITY_TIERS) as ReliabilityTierId[];
+
 export const MODEL_GOALS: Record<ModelGoalId, ModelGoalDefinition> = {
   speed: { id: "speed", name: "Speed", summary: "Lower latency and faster turns for high-volume workloads." },
   accuracy: { id: "accuracy", name: "Accuracy", summary: "Cleaner answers, better trust, and fewer obvious misses." },
@@ -107,6 +145,8 @@ export const MODEL_GOALS: Record<ModelGoalId, ModelGoalDefinition> = {
   recall: { id: "recall", name: "Recall", summary: "Perfectly retrieve facts from giant files within the context window." },
   compression: { id: "compression", name: "Compression", summary: "Pruning the model's footprint to heavily lower inference costs." },
 };
+
+export const MODEL_GOAL_IDS = [...CSV_MODEL_GOAL_IDS];
 
 export const DEFAULT_GOAL_ECONOMICS: Record<ModelGoalId, GoalEconomicsRule> = {
   speed: { fixedCostMillions: 0.5, percentOfBaseCost: 0.5 },
@@ -122,44 +162,146 @@ export const DEFAULT_GOAL_ECONOMICS: Record<ModelGoalId, GoalEconomicsRule> = {
   compression: { fixedCostMillions: 6.0, percentOfBaseCost: 4.5 },
 };
 
-function parseCompetitors(csv: string): CompetitorCompanyDefinition[] {
-  const lines = csv.trim().split("\n");
-  return lines.slice(1).map((line) => {
-    const values = line.split(",");
-    return {
-      id: values[0].trim(),
-      name: values[1].trim(),
-      budgetMillions: Number(values[2].trim()),
-      versionBase: Number(values[3].trim()),
-      sizeKey: values[4].trim() as CompetitorCompanyDefinition["sizeKey"],
-      dataTier: values[5].trim() as DataTierId,
-      goals: {
-        speed: Number(values[6].trim()),
-        accuracy: Number(values[7].trim()),
-        reasoning: Number(values[8].trim()),
-        agentic: Number(values[9].trim()),
-        coding: Number(values[10].trim()),
-        multimodal: Number(values[11].trim()),
-        creativity: Number(values[12].trim() || 0),
-        alignment: Number(values[13].trim() || 0),
-        multilingual: Number(values[14].trim() || 0),
-        recall: Number(values[15].trim() || 0),
-        compression: Number(values[16].trim() || 0),
-      },
-    };
+function parseCsvLine(line: string) {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === "\"") {
+      if (inQuotes && line[i + 1] === "\"") {
+        current += "\"";
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current);
+  return values;
+}
+
+function parseCsvRows(csv: string) {
+  const lines = csv
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const [headerLine, ...dataLines] = lines;
+  const headers = parseCsvLine(headerLine).map((value) => value.trim());
+
+  return dataLines.map((line) => {
+    const values = parseCsvLine(line);
+    return Object.fromEntries(
+      headers.map((header, index) => [header, (values[index] ?? "").trim()]),
+    ) as Record<string, string>;
   });
 }
 
-export const COMPETITOR_COMPANIES: CompetitorCompanyDefinition[] = parseCompetitors(competitorsRaw);
+function parseGoalRecord(
+  row: Record<string, string>,
+  prefix: string,
+  fallback: number,
+) {
+  return Object.fromEntries(
+    CSV_MODEL_GOAL_IDS.map((goalId) => [
+      goalId,
+      Number(row[`${prefix}${goalId}`] || fallback),
+    ]),
+  ) as Record<ModelGoalId, number>;
+}
 
-export const GLOBAL_COHORTS: Record<CohortId, { id: CohortId; name: string; population: number; priceSensitivity: number; weights: Partial<Record<ModelGoalId, number>>; baseCapabilityWeight: number; }> = {
-  casual: { id: "casual", name: "Casual Consumers", population: 3500000, priceSensitivity: 1.8, baseCapabilityWeight: 0.8, weights: { speed: 1.5, creativity: 1.8 } },
-  developer: { id: "developer", name: "Developers", population: 900000, priceSensitivity: 1.0, baseCapabilityWeight: 1.1, weights: { coding: 2.2, reasoning: 1.2, recall: 0.8 } },
-  enterprise: { id: "enterprise", name: "Enterprise B2B", population: 450000, priceSensitivity: 0.4, baseCapabilityWeight: 1.2, weights: { accuracy: 1.5, alignment: 2.0, agentic: 1.4 } },
-  global: { id: "global", name: "Multinational", population: 1800000, priceSensitivity: 1.2, baseCapabilityWeight: 0.9, weights: { multilingual: 2.5, speed: 1.1 } },
-  power: { id: "power", name: "Power Users", population: 600000, priceSensitivity: 0.7, baseCapabilityWeight: 1.5, weights: { reasoning: 1.8, recall: 1.8, multimodal: 1.4 } },
-  efficiency: { id: "efficiency", name: "Cost-Optimizers", population: 1200000, priceSensitivity: 2.5, baseCapabilityWeight: 0.8, weights: { compression: 2.5, speed: 1.5 } },
-};
+function parseCohorts(csv: string): CohortDef[] {
+  return parseCsvRows(csv).map((row) => ({
+    id: row.id as CohortId,
+    name: row.name,
+    category: (row.category || "Consumer") as CohortCategory,
+    population: Number(row.population),
+    priceSensitivity: Number(row.priceSensitivity),
+    baseCapabilityWeight: Number(row.baseCapabilityWeight),
+    weights: parseGoalRecord(row, "weight_", 0),
+    reliabilityWeights: Object.fromEntries(
+      RELIABILITY_TIER_IDS.map((tierId) => [
+        tierId,
+        Number(row[`weight_rel_${tierId}`] || 0),
+      ])
+    ) as Record<ReliabilityTierId, number>,
+    sessionsPerMonth: Number(row.sessionsPerMonth),
+    tokensPerSession: Number(row.tokensPerSession)
+  }));
+}
+
+function parseCompetitors(csv: string): CompetitorCompanyDefinition[] {
+  return parseCsvRows(csv).map((row) => ({
+    id: row.id,
+    name: row.name,
+    startingCapitalMillions: Number(row.startingCapitalMillions),
+    versionBase: Number(row.versionBase),
+    sizeKey: row.sizeKey as CompetitorCompanyDefinition["sizeKey"],
+    dataTier: row.dataTier as DataTierId,
+    defaultBehavior: row.behavior as CompetitorBehaviorId,
+    defaultStrategy: row.strategy as CompetitorStrategyId,
+    defaultCapabilityModifier: Number(row.capabilityModifier || 1),
+    defaultGoalModifiers: parseGoalRecord(row, "goalModifier_", 1),
+    goals: parseGoalRecord(row, "goal_", 0),
+  }));
+}
+
+function getEmptyReliability() {
+  return Object.fromEntries(
+    RELIABILITY_TIER_IDS.map((tierId) => [tierId, 0]),
+  ) as Record<ReliabilityTierId, number>;
+}
+
+function parseStartingModelConfigs(csv: string) {
+  return Object.fromEntries(
+    parseCsvRows(csv).map((row) => [
+      row.archetypeId as ArchetypeId,
+      {
+        mode: row.mode as TrainingConfig["mode"],
+        baseModelId: null,
+        targetVersion: Number(row.targetVersion),
+        size: row.size as TrainingConfig["size"],
+        dataTier: row.dataTier as DataTierId,
+        computeNeed: Number(row.computeNeed),
+        name: row.name,
+        targetMemorySize: Number(row.targetMemorySize),
+        targetParameterScale: Number(row.targetParameterScale),
+        targetContextWindow: Number(row.targetContextWindow),
+        goals: parseGoalRecord(row, "goal_", 0),
+        trainingDataUnits: Number(row.trainingDataUnits),
+        reliability: getEmptyReliability(),
+      } satisfies TrainingConfig,
+    ]),
+  ) as Record<ArchetypeId, TrainingConfig>;
+}
+
+export const GLOBAL_COHORT_LIST: CohortDef[] = parseCohorts(cohortsRaw);
+export const GLOBAL_COHORT_IDS: CohortId[] = GLOBAL_COHORT_LIST.map((cohort) => cohort.id);
+export const COMPETITOR_COMPANIES: CompetitorCompanyDefinition[] = parseCompetitors(competitorsRaw);
+export const STARTING_MODEL_CONFIGS = parseStartingModelConfigs(startingModelsRaw);
+
+export const GLOBAL_COHORTS: Record<CohortId, CohortDef> = Object.fromEntries(
+  GLOBAL_COHORT_LIST.map((cohort) => [cohort.id, cohort]),
+) as Record<CohortId, CohortDef>;
+
+export function createEmptyCohortSubscriberMap() {
+  return Object.fromEntries(
+    GLOBAL_COHORT_IDS.map((cohortId) => [cohortId, 0]),
+  ) as Record<CohortId, number>;
+}
 
 export const COMPETITOR_BEHAVIORS: Record<CompetitorBehaviorId, { label: string; summary: string }> = {
   disciplined: {
@@ -352,20 +494,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypeDefinition> = {
     startingDistribution: { consumer: 20, enterprise: 25 },
     startingMarketStandard: 58,
     startingDataInventory: { web: 4, licensed: 5, synthesized: 0 },
-    startingTrainingConfig: {
-      mode: "new",
-      baseModelId: null,
-      targetVersion: 1,
-      size: "large",
-      dataTier: "licensed",
-      computeNeed: 16,
-      name: "Atlas",
-      targetMemorySize: 32,
-      targetParameterScale: 56,
-      targetContextWindow: 32,
-      goals: { speed: 1, accuracy: 1, reasoning: 1, agentic: 1, coding: 1, multimodal: 1, creativity: 1, alignment: 1, multilingual: 1, recall: 1, compression: 1 },
-      trainingDataUnits: 3,
-    },
+    startingTrainingConfig: STARTING_MODEL_CONFIGS.frontier_lab,
     modifiers: {
       fundingPrestige: 15,
       trainingCapabilityBonus: 6,
@@ -392,20 +521,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypeDefinition> = {
     startingDistribution: { consumer: 45, enterprise: 18 },
     startingMarketStandard: 56,
     startingDataInventory: { web: 5, licensed: 3, synthesized: 0 },
-    startingTrainingConfig: {
-      mode: "new",
-      baseModelId: null,
-      targetVersion: 1,
-      size: "medium",
-      dataTier: "licensed",
-      computeNeed: 12,
-      name: "Pulse",
-      targetMemorySize: 16,
-      targetParameterScale: 22,
-      targetContextWindow: 16,
-      goals: { speed: 1, accuracy: 1, reasoning: 1, agentic: 1, coding: 1, multimodal: 1, creativity: 1, alignment: 1, multilingual: 1, recall: 1, compression: 1 },
-      trainingDataUnits: 2,
-    },
+    startingTrainingConfig: STARTING_MODEL_CONFIGS.consumer_ai_product_company,
     modifiers: {
       fundingPrestige: 0,
       trainingCapabilityBonus: 0,
@@ -432,20 +548,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypeDefinition> = {
     startingDistribution: { consumer: 12, enterprise: 42 },
     startingMarketStandard: 55,
     startingDataInventory: { web: 3, licensed: 5, synthesized: 0 },
-    startingTrainingConfig: {
-      mode: "new",
-      baseModelId: null,
-      targetVersion: 1,
-      size: "medium",
-      dataTier: "licensed",
-      computeNeed: 10,
-      name: "Anchor",
-      targetMemorySize: 16,
-      targetParameterScale: 22,
-      targetContextWindow: 16,
-      goals: { speed: 1, accuracy: 1, reasoning: 1, agentic: 1, coding: 1, multimodal: 1, creativity: 1, alignment: 1, multilingual: 1, recall: 1, compression: 1 },
-      trainingDataUnits: 3,
-    },
+    startingTrainingConfig: STARTING_MODEL_CONFIGS.enterprise_copilot_company,
     modifiers: {
       fundingPrestige: 4,
       trainingCapabilityBonus: 0,
@@ -472,20 +575,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypeDefinition> = {
     startingDistribution: { consumer: 18, enterprise: 25 },
     startingMarketStandard: 56,
     startingDataInventory: { web: 5, licensed: 3, synthesized: 0 },
-    startingTrainingConfig: {
-      mode: "new",
-      baseModelId: null,
-      targetVersion: 1,
-      size: "medium",
-      dataTier: "web",
-      computeNeed: 12,
-      name: "Relay",
-      targetMemorySize: 16,
-      targetParameterScale: 22,
-      targetContextWindow: 16,
-      goals: { speed: 1, accuracy: 1, reasoning: 1, agentic: 1, coding: 1, multimodal: 1, creativity: 1, alignment: 1, multilingual: 1, recall: 1, compression: 1 },
-      trainingDataUnits: 2,
-    },
+    startingTrainingConfig: STARTING_MODEL_CONFIGS.open_source_challenger,
     modifiers: {
       fundingPrestige: -2,
       trainingCapabilityBonus: 1,

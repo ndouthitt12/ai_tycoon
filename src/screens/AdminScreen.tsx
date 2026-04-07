@@ -1,7 +1,7 @@
 import { useState } from "react";
 
-import { COMPETITOR_BEHAVIORS, COMPETITOR_COMPANIES, COMPETITOR_STRATEGIES, MODEL_GOALS } from "../game/defs";
-import { CohortDef, CohortId, CompetitorBehaviorId, CompetitorStrategyId, GameState, ModelGoalId } from "../game/types";
+import { COMPETITOR_BEHAVIORS, COMPETITOR_COMPANIES, COMPETITOR_STRATEGIES, GLOBAL_COHORT_IDS, MODEL_GOALS, RELIABILITY_TIERS } from "../game/defs";
+import { CohortDef, CohortId, CompetitorBehaviorId, CompetitorStrategyId, GameState, ModelGoalId, ReliabilityTierId } from "../game/types";
 import { Button, Panel } from "../components/ui";
 
 export function AdminScreen({
@@ -29,8 +29,11 @@ export function AdminScreen({
   onUpdateMonthlyUserMultiplier: (value: number) => void;
 }) {
   const [capitalMillions, setCapitalMillions] = useState(10);
-  const [competitorCapital, setCompetitorCapital] = useState<Record<string, number>>(
-    Object.fromEntries(COMPETITOR_COMPANIES.map((company) => [company.id, 25])),
+  const [capitalInput, setCapitalInput] = useState<Record<string, string>>({});
+  const [cohortTab, setCohortTab] = useState<"Consumer" | "Business">("Consumer");
+
+  const activeCohorts = GLOBAL_COHORT_IDS.map((id) => game.globalCohorts[id] as CohortDef).filter(
+    (cohort) => cohort.category === cohortTab
   );
 
   return (
@@ -123,13 +126,28 @@ export function AdminScreen({
       </Panel>
 
       <Panel title="Global Demographic Cohorts" subtitle="The deterministic market is driven by user demographics. Edit their population and what capabilities they prioritize when choosing a model.">
+        <div className="mb-4 flex border-b border-slate-800">
+          <button
+            className={`px-4 py-2 font-medium ${cohortTab === "Consumer" ? "border-b-2 border-slate-200 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+            onClick={() => setCohortTab("Consumer")}
+          >
+            Consumer (Chatbots)
+          </button>
+          <button
+            className={`px-4 py-2 font-medium ${cohortTab === "Business" ? "border-b-2 border-slate-200 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
+            onClick={() => setCohortTab("Business")}
+          >
+            Business (APIs)
+          </button>
+        </div>
         <div className="grid gap-4 xl:grid-cols-2">
-          {(Object.values(game.globalCohorts) as CohortDef[]).map(cohort => (
+          {activeCohorts.map((cohort) => {
+            return (
             <div key={cohort.id} className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
               <div className="flex items-center justify-between mb-4">
                 <div className="font-semibold text-slate-50">{cohort.name}</div>
               </div>
-              <div className="grid gap-4 md:grid-cols-[1fr_2fr]">
+              <div className="grid gap-4 md:grid-cols-[1.5fr_2fr]">
                 <div className="space-y-4">
                   <label className="block text-sm">
                     <div className="mb-1 text-slate-400">Total Population (Millions)</div>
@@ -164,9 +182,9 @@ export function AdminScreen({
                 </div>
                 <div>
                   <div className="text-sm text-slate-400 mb-2">Priority Weights</div>
-                  <div className="grid gap-2 grid-cols-2">
+                  <div className="grid gap-x-2 gap-y-1 grid-cols-2">
                     {(Object.keys(MODEL_GOALS) as ModelGoalId[]).map(goalId => (
-                      <label key={goalId} className="flex items-center justify-between gap-2 text-xs">
+                      <label key={`goal_${goalId}`} className="flex items-center justify-between gap-2 text-xs">
                         <span className="text-slate-300">{MODEL_GOALS[goalId].name}</span>
                         <input
                           type="number"
@@ -175,7 +193,24 @@ export function AdminScreen({
                           onChange={(e) => onUpdateCohortDef(cohort.id, { 
                             weights: { [goalId]: Math.max(0, Number(e.target.value) || 0) } 
                           })}
-                          className="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none text-right"
+                          className="w-12 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-100 outline-none text-right"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-3 mb-2 border-t border-slate-800 pt-2 text-sm text-slate-400">Reliability Demand</div>
+                  <div className="grid gap-x-2 gap-y-1 grid-cols-2">
+                    {(Object.keys(RELIABILITY_TIERS) as ReliabilityTierId[]).map(tierId => (
+                      <label key={`rel_${tierId}`} className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-slate-300">{RELIABILITY_TIERS[tierId].name}</span>
+                        <input
+                          type="number"
+                          step={0.1}
+                          value={cohort.reliabilityWeights[tierId] ?? 0}
+                          onChange={(e) => onUpdateCohortDef(cohort.id, { 
+                            reliabilityWeights: { ...cohort.reliabilityWeights, [tierId]: Math.max(0, Number(e.target.value) || 0) } 
+                          })}
+                          className="w-12 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-100 outline-none text-right"
                         />
                       </label>
                     ))}
@@ -183,7 +218,7 @@ export function AdminScreen({
                 </div>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       </Panel>
 
@@ -204,7 +239,7 @@ export function AdminScreen({
             <tbody>
               {COMPETITOR_COMPANIES.map((company) => {
                 const admin = game.competitorAdmin[company.id];
-                const pendingCapital = competitorCapital[company.id] ?? 0;
+                const pendingCapital = Number(capitalInput[company.id]) || 0;
                 const capabilityMultiplier = admin.capabilityModifier > 0 ? admin.capabilityModifier : 1;
                 return (
                   <tr key={company.id} className="border-t border-slate-800/80 text-slate-200">
@@ -220,11 +255,11 @@ export function AdminScreen({
                         <input
                           type="number"
                           step={1}
-                          value={pendingCapital}
+                          value={capitalInput[company.id] ?? ""}
                           onChange={(event) =>
-                            setCompetitorCapital((current) => ({
+                            setCapitalInput((current) => ({
                               ...current,
-                              [company.id]: Number(event.target.value) || 0,
+                              [company.id]: event.target.value,
                             }))
                           }
                           className="w-24 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
