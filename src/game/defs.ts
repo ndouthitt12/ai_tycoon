@@ -239,7 +239,10 @@ function parseCohorts(csv: string): CohortDef[] {
       ])
     ) as Record<ReliabilityTierId, number>,
     sessionsPerMonth: Number(row.sessionsPerMonth),
-    tokensPerSession: Number(row.tokensPerSession)
+    tokensPerSession: Number(row.tokensPerSession),
+    baseTokensPerMonthMillions: Number(row.baseTokensPerMonthMillions || 0),
+    maxBudget: Number(row.maxBudget || 0),
+    valueToPriceWeight: Number(row.valueToPriceWeight || 0),
   }));
 }
 

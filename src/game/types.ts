@@ -34,6 +34,9 @@ export interface CohortDef {
   baseCapabilityWeight: number;
   sessionsPerMonth: number;
   tokensPerSession: number;
+  baseTokensPerMonthMillions: number;
+  maxBudget: number;
+  valueToPriceWeight: number;
 }
 
 export interface Loan {

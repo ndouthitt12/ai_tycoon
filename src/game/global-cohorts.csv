@@ -1,14 +1,14 @@
-id,name,category,population,priceSensitivity,baseCapabilityWeight,weight_speed,weight_accuracy,weight_reasoning,weight_agentic,weight_coding,weight_multimodal,weight_creativity,weight_alignment,weight_multilingual,weight_recall,weight_compression,weight_rel_syntax_extraction,weight_rel_semantic_generation,weight_rel_analytical_reasoning,weight_rel_complex_synthesis,weight_rel_bounded_agency,weight_rel_autonomous_workflow,weight_rel_frontier_reasoning,sessionsPerMonth,tokensPerSession
-casual,Casual Consumers,Consumer,64000000,1.8,0.8,1.5,0,0,0,0,0,1.8,0,0,0,0,0,0.5,0,0,0,0,0,20,2000
-developer,Developers,Consumer,11200000,1.0,1.1,0,0,1.2,0,2.2,0,0,0,0,0.8,0,1.0,0,1.0,0.5,0,0,0,150,10000
-global,Multinational,Consumer,18000000,1.2,0.9,1.1,0,0,0,0,0,0,0,2.5,0,0,0.5,1.0,0,0,0,0,0,80,6000
-power,Power Users,Consumer,21000000,0.7,1.5,0,0,1.8,0,0,1.4,0,0,0,1.8,0,0,1.0,1.5,1.0,0,0,0,300,15000
-efficiency,Cost-Optimizers,Consumer,28000000,2.5,0.8,1.5,0,0,0,0,0,0,0,0,0,2.5,0.2,0.2,0,0,0,0,0,40,3000
-medical,Medical & Healthcare,Business,8500000,0.3,1.4,0,3.0,1.5,0,0,1.0,0,2.0,0,2.5,0,1.0,0,2.0,2.5,0,0,1.5,60,8000
-law,Legal & Compliance,Business,4200000,0.4,1.3,0,2.5,2.0,0,0,0,0,1.5,0,3.0,0,2.0,0,2.5,1.5,0,0,1.0,100,12000
-government,Government & Public Sector,Business,15000000,0.6,1.0,0,2.0,0.5,0,0,0,0,3.0,1.0,1.0,0,1.0,1.0,1.0,1.0,0,0,0.5,40,4000
-education,Education & Academia,Business,22000000,1.5,0.9,0.5,1.5,0,0,0,0,1.0,1.0,0.5,1.0,0.5,1.0,1.5,0.5,0,0,0,0,150,5000
-tech,Tech & Software,Business,12000000,0.8,1.5,1.5,0,1.5,2.0,3.0,0,0,0,0,0,1.0,1.0,0,1.5,1.0,2.5,2.0,1.0,200,12000
-finance,Finance & Banking,Business,9000000,0.2,1.3,2.0,2.5,1.0,0,0,0,0,1.5,0,1.0,0,1.0,0,2.5,1.0,1.0,1.5,0.5,120,8000
-manufacturing,Manufacturing & Supply,Business,16000000,0.9,1.1,0,0.5,0.5,1.5,0,0,0,0.5,0,0.5,0,0.5,0,1.0,1.0,1.5,2.5,0,30,3000
-retail,Retail & E-Commerce,Business,24000000,1.3,1.0,2.0,0,0,1.0,0,1.5,0.5,0.5,1.0,0,0.5,0.5,0.5,0.5,0.5,1.0,1.0,0,40,2000
+id,name,category,population,priceSensitivity,baseCapabilityWeight,weight_speed,weight_accuracy,weight_reasoning,weight_agentic,weight_coding,weight_multimodal,weight_creativity,weight_alignment,weight_multilingual,weight_recall,weight_compression,weight_rel_syntax_extraction,weight_rel_semantic_generation,weight_rel_analytical_reasoning,weight_rel_complex_synthesis,weight_rel_bounded_agency,weight_rel_autonomous_workflow,weight_rel_frontier_reasoning,sessionsPerMonth,tokensPerSession,baseTokensPerMonthMillions,maxBudget,valueToPriceWeight
+casual,Casual Consumers,Consumer,64000000,1.8,0.8,1.5,0,0,0,0,0,1.8,0,0,0,0,0,0.5,0,0,0,0,0,20,2000,0,15,0.8
+developer,Developers,Consumer,11200000,1.0,1.1,0,0,1.2,0,2.2,0,0,0,0,0.8,0,1.0,0,1.0,0.5,0,0,0,150,10000,0,40,0.2
+global,Multinational,Consumer,18000000,1.2,0.9,1.1,0,0,0,0,0,0,0,2.5,0,0,0.5,1.0,0,0,0,0,0,80,6000,0,20,0.55
+power,Power Users,Consumer,21000000,0.7,1.5,0,0,1.8,0,0,1.4,0,0,0,1.8,0,0,1.0,1.5,1.0,0,0,0,300,15000,0,40,0.15
+efficiency,Cost-Optimizers,Consumer,28000000,2.5,0.8,1.5,0,0,0,0,0,0,0,0,0,2.5,0.2,0.2,0,0,0,0,0,40,3000,0,12,0.95
+medical,Medical & Healthcare,Business,8500000,0.3,1.4,0,3.0,1.5,0,0,1.0,0,2.0,0,2.5,0,1.0,0,2.0,2.5,0,0,1.5,60,8000,12,120000,0.25
+law,Legal & Compliance,Business,4200000,0.4,1.3,0,2.5,2.0,0,0,0,0,1.5,0,3.0,0,2.0,0,2.5,1.5,0,0,1.0,100,12000,18,250000,0.15
+government,Government & Public Sector,Business,15000000,0.6,1.0,0,2.0,0.5,0,0,0,0,3.0,1.0,1.0,0,1.0,1.0,1.0,1.0,0,0,0.5,40,4000,8,90000,0.35
+education,Education & Academia,Business,22000000,1.5,0.9,0.5,1.5,0,0,0,0,1.0,1.0,0.5,1.0,0.5,1.0,1.5,0.5,0,0,0,0,150,5000,10,80000,0.5
+tech,Tech & Software,Business,12000000,0.8,1.5,1.5,0,1.5,2.0,3.0,0,0,0,0,0,1.0,1.0,0,1.5,1.0,2.5,2.0,1.0,200,12000,50,600000,0.3
+finance,Finance & Banking,Business,9000000,0.2,1.3,2.0,2.5,1.0,0,0,0,0,1.5,0,1.0,0,1.0,0,2.5,1.0,1.0,1.5,0.5,120,8000,20,220000,0.2
+manufacturing,Manufacturing & Supply,Business,16000000,0.9,1.1,0,0.5,0.5,1.5,0,0,0,0.5,0,0.5,0,0.5,0,1.0,1.0,1.5,2.5,0,30,3000,6,50000,0.6
+retail,Retail & E-Commerce,Business,24000000,1.3,1.0,2.0,0,0,1.0,0,1.5,0.5,0.5,1.0,0,0.5,0.5,0.5,0.5,0.5,1.0,1.0,0,40,2000,5,40000,0.7

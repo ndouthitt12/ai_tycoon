@@ -49,6 +49,10 @@ import {
   TrainingConfig,
   UpgradeId,
 } from "./types";
+import { getMarketCompanyTable as getMarketCompanyTableSystem, getMarketComparison as getMarketComparisonSystem, getMarketModelTable as getMarketModelTableSystem, getProductComputeUsage as getProductComputeUsageSystem, getProjectedServingDemand as getProjectedServingDemandSystem, settleGlobalMarket as settleGlobalMarketSystem, updateModelPerformance as updateModelPerformanceSystem } from "./systems/market";
+import { createInitialCompetitorCompanyState as createInitialCompetitorCompanyStateSystem, getCompetitorCompanyDefinition as getCompetitorCompanyDefinitionSystem, getCompetitorCompanyState as getCompetitorCompanyStateSystem, updateCompetitorCompanies as updateCompetitorCompaniesSystem } from "./systems/competitors";
+import { calculateRunPreview as calculateRunPreviewSystem, getContextWindowLimit as getContextWindowLimitSystem, getDatasetPurchaseCost as getDatasetPurchaseCostSystem, getMemorySizeLimit as getMemorySizeLimitSystem, getResearchContribution as getResearchContributionSystem, launchRun as launchRunSystem } from "./systems/training";
+import { copyGame as copyGameSystem } from "./systems/state";
 
 export function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -180,7 +184,7 @@ export function getQuarterNumber(turn: number) {
 }
 
 export function copyGame(game: GameState): GameState {
-  return JSON.parse(JSON.stringify(game));
+  return copyGameSystem(game);
 }
 
 export function getArchetype(game: GameState) {
@@ -401,7 +405,7 @@ function getCompetitorBaselineEconomicGoals(previousGoals: Record<ModelGoalId, n
 }
 
 function getCompetitorCompanyDefinition(competitorId: string) {
-  return COMPETITOR_COMPANIES.find((company) => company.id === competitorId) ?? null;
+  return getCompetitorCompanyDefinitionSystem(competitorId);
 }
 
 function getCompetitorCompanyState(
@@ -409,13 +413,7 @@ function getCompetitorCompanyState(
   competitorId: string,
   companyIndex?: number,
 ) {
-  const existing = game.competitorCompanies[competitorId];
-  if (existing) return existing;
-  const company =
-    getCompetitorCompanyDefinition(competitorId) ??
-    COMPETITOR_COMPANIES[Math.max(0, companyIndex ?? 0)];
-  const index = companyIndex ?? COMPETITOR_COMPANIES.findIndex((entry) => entry.id === company.id);
-  return createInitialCompetitorCompanyState(game.goalEconomics, company, Math.max(0, index));
+  return getCompetitorCompanyStateSystem(game, competitorId, companyIndex);
 }
 
 function buildCompetitorRelease(
@@ -590,95 +588,11 @@ function createInitialCompetitorCompanyState(
   company: CompetitorCompanyDefinition,
   companyIndex: number,
 ): GameState["competitorCompanies"][string] {
-  const admin = getDefaultCompetitorAdminState(company.id);
-  const baseState: GameState["competitorCompanies"][string] = {
-    id: company.id,
-    cash: company.startingCapitalMillions * 1000000,
-    revenueHistory: [],
-    profitHistory: [],
-    models: [],
-    releaseIndex: 0,
-    nextReleaseMonth: 1,
-    currentFamilyName: `${company.name.split(" ")[0]} ${COMPETITOR_RELEASE_FAMILIES[companyIndex % COMPETITOR_RELEASE_FAMILIES.length]}`,
-  };
-  const initialRelease = buildCompetitorRelease(goalEconomics, company, companyIndex, baseState, admin, 1);
-  if (!initialRelease) return baseState;
-
-  const nextReleaseIndex = 1;
-  return {
-    ...baseState,
-    cash: baseState.cash - initialRelease.totalCost,
-    models: [initialRelease.model],
-    releaseIndex: nextReleaseIndex,
-    nextReleaseMonth: 1 + getCompetitorDevelopmentMonths(admin.behavior, getCompetitorReleaseKind(nextReleaseIndex), companyIndex, nextReleaseIndex),
-    currentFamilyName: initialRelease.currentFamilyName,
-  };
+  return createInitialCompetitorCompanyStateSystem(goalEconomics, company, companyIndex);
 }
 
 function updateCompetitorCompanies(game: GameState) {
-  const playerTopCapability = getBestCapability(game);
-  const playerRevenuePenetration = clamp(
-    (game.products.chatbot.activeUsers / 50000) * 0.4 +
-    (game.products.api.activeUsers / 500) * 0.6,
-    0,
-    0.35,
-  );
-
-  COMPETITOR_COMPANIES.forEach((company, index) => {
-    const admin = getCompetitorAdminState(game, company.id);
-    const behavior = getCompetitorBehaviorProfile(admin.behavior);
-    const competitor = getCompetitorCompanyState(game, company.id, index);
-    const averageCapability = competitor.models.length
-      ? competitor.models.reduce((sum, model) => sum + model.capability, 0) / competitor.models.length
-      : MODEL_SIZES[company.sizeKey].baseCapability + DATA_TIERS[company.dataTier].capability;
-    const topCapability = competitor.models.length
-      ? Math.max(...competitor.models.map((model) => model.capability))
-      : averageCapability;
-    const capabilityPressure = clamp((playerTopCapability - topCapability) * 0.006, -0.05, 0.22);
-    const competitorShareMultiplier = clamp(1 - capabilityPressure - playerRevenuePenetration, 0.5, 1.05);
-    const monthlyRevenue = Math.round(
-      ((company.startingCapitalMillions * 2800000 * behavior.revenueMultiplier + averageCapability * 420000 + topCapability * 180000) / 12) *
-      (competitor.models.length ? 1 : 0.4) *
-      competitorShareMultiplier *
-      getMonthlyUserMultiplier(game),
-    );
-    const monthlyMargin = clamp(0.03 + averageCapability / 2600 + behavior.profitMarginBonus, 0.02, 0.26);
-    const monthlyProfit = Math.round(monthlyRevenue * monthlyMargin);
-    const monthlyOperatingCost = monthlyRevenue - monthlyProfit;
-
-    competitor.cash = Math.round(competitor.cash + monthlyRevenue - monthlyOperatingCost);
-    competitor.revenueHistory.push(monthlyRevenue);
-    competitor.revenueHistory = competitor.revenueHistory.slice(-12);
-    competitor.profitHistory.push(monthlyProfit);
-    competitor.profitHistory = competitor.profitHistory.slice(-12);
-
-    if (game.turn < competitor.nextReleaseMonth) {
-      game.competitorCompanies[company.id] = competitor;
-      return;
-    }
-
-    const release = buildCompetitorRelease(game.goalEconomics, company, index, competitor, admin, game.turn);
-    if (!release) {
-      competitor.nextReleaseMonth = game.turn + 1;
-      game.competitorCompanies[company.id] = competitor;
-      return;
-    }
-
-    competitor.cash = Math.round(competitor.cash - release.totalCost);
-    competitor.models.unshift(release.model);
-    const launchCapabilityLead = release.model.capability - game.marketStandard;
-    if (launchCapabilityLead >= 10) {
-      const shockMagnitude = clamp(launchCapabilityLead * 0.002, 0.02, 0.07);
-      game.competitorLaunchShock = Math.min(0.12, game.competitorLaunchShock + shockMagnitude);
-      addNotification(game, `${company.name} launched a powerful new model. Expect elevated user churn.`, "bad");
-    }
-    competitor.releaseIndex += 1;
-    competitor.currentFamilyName = release.currentFamilyName;
-    competitor.nextReleaseMonth =
-      game.turn +
-      getCompetitorDevelopmentMonths(admin.behavior, getCompetitorReleaseKind(competitor.releaseIndex), index, competitor.releaseIndex);
-    game.competitorCompanies[company.id] = competitor;
-  });
+  updateCompetitorCompaniesSystem(game, addNotification);
 }
 
 function getCompetitorBranchFocus(strategy: GameState["competitorAdmin"][string]["strategy"], releaseIndex: number) {
@@ -852,12 +766,7 @@ function getGoalFitScore(goalScores: ReturnType<typeof getModelGoalScores>, prod
 }
 
 export function getMarketComparison(capability: number, marketStandard: number) {
-  const delta = capability - marketStandard;
-  const tone: "default" | "good" | "warning" | "bad" =
-    delta >= 8 ? "good" : delta >= 0 ? "default" : delta >= -8 ? "warning" : "bad";
-  const label = delta >= 0 ? `+${delta} vs market` : `${delta} vs market`;
-
-  return { delta, tone, label };
+  return getMarketComparisonSystem(capability, marketStandard);
 }
 
 export function getUpgradeCost(key: UpgradeId, level: number) {
@@ -872,12 +781,11 @@ export function getUpgradeCost(key: UpgradeId, level: number) {
 }
 
 export function getMemorySizeLimit(baseMemorySize: number, inferenceUpgradeLevel: number) {
-  return baseMemorySize + 64 + inferenceUpgradeLevel * 16;
+  return getMemorySizeLimitSystem(baseMemorySize, inferenceUpgradeLevel);
 }
 
 export function getContextWindowLimit(baseContextWindow: number, targetMemorySize: number, baseMemorySize: number) {
-  const extraMemoryBlocks = Math.max(0, targetMemorySize - baseMemorySize) / 8;
-  return baseContextWindow + 128 + extraMemoryBlocks * 16;
+  return getContextWindowLimitSystem(baseContextWindow, targetMemorySize, baseMemorySize);
 }
 
 function getBlendedModelMetrics(game: GameState, product: ProductState) {
@@ -983,18 +891,11 @@ export function getDatacenterBuildCost(pods: number) {
 }
 
 export function getDatasetPurchaseCost(tierKey: DataTierId, packId: keyof typeof DATASET_PACKS) {
-  return Math.round(DATA_TIERS[tierKey].cost * DATASET_PACKS[packId].multiplier);
+  return getDatasetPurchaseCostSystem(tierKey, packId);
 }
 
 export function getResearchContribution(game: GameState) {
-  const archetype = getArchetype(game);
-  const effects = getDirectiveEffects(game);
-  return Math.round(
-    game.headcount.researchers * 2.2 +
-    game.upgrades.training * 4 +
-    archetype.modifiers.trainingCapabilityBonus +
-    effects.frontierCapabilityBonus,
-  );
+  return getResearchContributionSystem(game);
 }
 
 export function getRunwayMonths(game: GameState) {
@@ -1006,126 +907,19 @@ export function getProductComputeUsage(
   product: ProductState,
   metrics: ReturnType<typeof getBlendedModelMetrics>
 ): { demand: number; tokensMillions: number } {
-  if (!metrics) return { demand: 0, tokensMillions: 0 };
-
-  if (product.type === "chatbot") {
-    const tokensPerPod = 50; // 50M tokens = 1 Pod
-    let demand = Math.ceil(product.tokenUsageMillions / tokensPerPod);
-    
-    return {
-      demand: demand * metrics.inferenceCost,
-      tokensMillions: product.tokenUsageMillions,
-    };
-  }
-
-  // API complex usage
-  const effectiveTrust = clamp(Math.round(metrics.trust * 0.55 + game.trust * 0.45), 10, 99);
-  const fitAdvantage = metrics.goalFit - 64;
-  const gap = (metrics.averageCapability * 0.65 + metrics.bestCapability * 0.35 + fitAdvantage * 0.45) - game.marketStandard;
-  const marketAdvantage = Math.max(-20, Math.min(28, gap));
-  const contextAdvantage = Math.max(0, metrics.contextWindow - getBaseContextWindow("medium"));
-  const relativePriceDelta = (metrics.averagePrice - PRODUCT_TYPES.api.defaultPrice) / PRODUCT_TYPES.api.defaultPrice;
-  const tokensPerClientMillions = clamp(
-    1 +
-    marketAdvantage * 0.018 +
-    (effectiveTrust - 50) * 0.006 +
-    contextAdvantage * 0.0015 +
-    metrics.recencyScore * 0.18 +
-    metrics.goalScores.coding * 0.0025 +
-    metrics.goalScores.agentic * 0.002 -
-    relativePriceDelta * 0.22,
-    0.35,
-    3.5,
-  );
-
-  const totalTokensMillions = product.activeUsers * tokensPerClientMillions;
-  const demand = (totalTokensMillions * metrics.inferenceCost) / 4.5;
-
-  return { demand, tokensMillions: totalTokensMillions };
+  return getProductComputeUsageSystem(game, product, metrics);
 }
 
 export function getProjectedServingDemand(game: GameState) {
-  return Object.values(game.products).reduce((sum, product) => {
-    const metrics = getBlendedModelMetrics(game, product);
-    const usage = getProductComputeUsage(game, product, metrics);
-    return sum + usage.demand;
-  }, 0);
+  return getProjectedServingDemandSystem(game);
 }
 
 export function getMarketModelTable(game: GameState) {
-  const rivalRows = COMPETITOR_COMPANIES.flatMap((company, index) => {
-    const competitor = getCompetitorCompanyState(game, company.id, index);
-    return competitor.models.map((model) => ({
-      owner: company.name,
-      id: model.name, // unique enough for UI key
-      chatPrice: model.chatPrice,
-      apiPrice: model.apiPrice,
-      ...model,
-    }));
-  });
-
-  const playerRows = game.models.map((model) => ({
-    owner: "Your Company",
-    id: model.id,
-    name: model.name,
-    version: model.version,
-    developmentCost: model.developmentCost,
-    capability: model.capability,
-    memorySize: model.memorySize,
-    parameterScale: model.parameterScale,
-    contextWindow: model.contextWindow,
-    goals: { ...model.goals },
-    monthBuilt: model.monthBuilt,
-    releaseMonth: model.monthBuilt,
-    subscribersByCohort: model.subscribersByCohort,
-  }));
-
-  return [...playerRows, ...rivalRows]
-    .map((entry) => ({
-      ...entry,
-      marketLabel: getMarketComparison(entry.capability, game.marketStandard).label,
-      marketTone: getMarketComparison(entry.capability, game.marketStandard).tone,
-    }))
-    .sort((a, b) => b.monthBuilt - a.monthBuilt || b.capability - a.capability);
+  return getMarketModelTableSystem(game);
 }
 
 export function getMarketCompanyTable(game: GameState) {
-  const competitorRows = COMPETITOR_COMPANIES.map((company) => {
-    const competitor = getCompetitorCompanyState(game, company.id);
-    const topModel = [...competitor.models].sort((a, b) => b.capability - a.capability || b.monthBuilt - a.monthBuilt)[0] ?? null;
-    const averageCapability = competitor.models.length
-      ? competitor.models.reduce((sum, model) => sum + model.capability, 0) / competitor.models.length
-      : game.marketStandard;
-    const priorYearRevenue = Math.round(competitor.revenueHistory.reduce((sum, value) => sum + value, 0));
-    const priorYearProfit = Math.round(competitor.profitHistory.reduce((sum, value) => sum + value, 0));
-    const cash = Math.round(competitor.cash);
-
-    return {
-      name: company.name,
-      cash,
-      priorYearRevenue,
-      priorYearProfit,
-      topModel: topModel ? `${topModel.name} v${formatVersion(topModel.version)}` : "No flagship",
-      averageCapability: Number(averageCapability.toFixed(1)),
-    };
-  });
-
-  const playerTopModel = game.models.length
-    ? [...game.models].sort((a, b) => b.capability - a.capability)[0]
-    : null;
-
-  const playerRow = {
-    name: "Your Company",
-    cash: Math.round(game.cash),
-    priorYearRevenue: Math.round(game.lastMonth.revenue * 12),
-    priorYearProfit: Math.round(game.lastMonth.profit * 12),
-    topModel: playerTopModel ? `${playerTopModel.name} v${formatVersion(playerTopModel.version)}` : "No flagship",
-    averageCapability: game.models.length
-      ? Number((game.models.reduce((sum, model) => sum + model.capability, 0) / game.models.length).toFixed(1))
-      : 0,
-  };
-
-  return [playerRow, ...competitorRows].sort((a, b) => b.averageCapability - a.averageCapability);
+  return getMarketCompanyTableSystem(game);
 }
 
 function addNotification(game: GameState, text: string, tone: NotificationTone = "info") {
@@ -1312,12 +1106,14 @@ function updateModelPerformance(game: GameState) {
       storedPriorUsers[String(modelId)] = Math.max(0, game.modelPerformance[String(modelId)]?.lastMonthUsers ?? 0);
     });
     const totalStoredPriorUsers = Object.values(storedPriorUsers).reduce((sum, value) => sum + value, 0);
+    const acquisitionDecay = product.type === "chatbot" ? 0.9 : 0.97;
+    const ageChurnCoefficient = product.type === "chatbot" ? 0.0045 : 0.0022;
 
     // Exponential decay: each month of age reduces acquisition weight by 3%.
     // No floor — old models genuinely trail off and differentiate from each other.
     const acquisitionWeights: Record<string, number> = {};
     product.modelIds.forEach((modelId) => {
-      acquisitionWeights[String(modelId)] = Math.pow(0.97, modelAges[String(modelId)]);
+      acquisitionWeights[String(modelId)] = Math.pow(acquisitionDecay, modelAges[String(modelId)]);
     });
     const totalWeight = Object.values(acquisitionWeights).reduce((sum, w) => sum + w, 0);
 
@@ -1332,7 +1128,7 @@ function updateModelPerformance(game: GameState) {
       // Per-model churn: shift the product churn rate by how much older/newer this
       // model is relative to the product average, using the same 0.0022 coefficient
       // already in the churn formula.
-      const churnDelta = (modelAges[key] - avgAge) * 0.0022;
+      const churnDelta = (modelAges[key] - avgAge) * ageChurnCoefficient;
       const modelChurn = clamp(product.churn + churnDelta, 0.005, 0.50);
       const priorUserShare = totalStoredPriorUsers > 0 ? storedPriorUsers[key] / totalStoredPriorUsers : 1 / modelCount;
       const startingUsersForModel = rawStartingUsers * priorUserShare;
@@ -1463,166 +1259,7 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
 }
 
 export function calculateRunPreview(game: GameState) {
-  const size = MODEL_SIZES[game.trainingConfig.size];
-  const data = DATA_TIERS[game.trainingConfig.dataTier];
-  const archetype = getArchetype(game);
-  const effects = getDirectiveEffects(game);
-  const baseModel =
-    game.trainingConfig.mode === "upgrade" || game.trainingConfig.mode === "branch"
-      ? getModelById(game, game.trainingConfig.baseModelId)
-      : null;
-  const goals = game.trainingConfig.goals;
-  const goalTotal = getGoalTotal(goals);
-  const activeGoals = getActiveGoalCount(goals);
-  const goalComplexity = Math.log2(goalTotal + 1);
-  const trainingDataUnits = clamp(game.trainingConfig.trainingDataUnits, 1, game.dataInventory[game.trainingConfig.dataTier]);
-  const baseMemorySize = baseModel ? baseModel.memorySize : getBaseMemorySize(size.key);
-  const baseParameterScale = baseModel ? baseModel.parameterScale : getBaseParameterScale(size.key);
-  const baseContextWindow = baseModel ? baseModel.contextWindow : getBaseContextWindow(size.key);
-  const maxMemorySize = getMemorySizeLimit(baseMemorySize, game.upgrades.inference);
-  const targetMemorySize = clamp(game.trainingConfig.targetMemorySize, baseMemorySize, maxMemorySize);
-  const memoryExpansion = Math.max(0, targetMemorySize - baseMemorySize);
-  const parameterLimit = getParameterScaleLimit(size.key, baseParameterScale, trainingDataUnits);
-  const targetParameterScale = clamp(game.trainingConfig.targetParameterScale, baseParameterScale, parameterLimit);
-  const parameterExpansion = Math.max(0, targetParameterScale - baseParameterScale);
-  const maxContextWindow = getContextWindowLimit(baseContextWindow, targetMemorySize, baseMemorySize);
-  const targetContextWindow = clamp(game.trainingConfig.targetContextWindow, baseContextWindow, maxContextWindow);
-  const contextExpansion = Math.max(0, targetContextWindow - baseContextWindow);
-  const parameterSteps = parameterExpansion / getParameterStep(size.key);
-  const memorySteps = memoryExpansion / 8;
-  const contextSteps = contextExpansion / 8;
-  const computeNeed = clamp(game.trainingConfig.computeNeed, size.minCompute, size.maxCompute);
-  const engineerDurationReduction = game.headcount.engineers * 0.1;
-  const durationBeforeEngineerReduction =
-    (size.baseWork +
-      parameterSteps * 10 +
-      memorySteps * 6 +
-      contextSteps * 4 +
-      trainingDataUnits * 2.8 +
-      goalComplexity * 2.8 +
-      activeGoals * 0.8 +
-      (baseModel ? 8 : 0)) /
-    computeNeed;
-  const totalMonths = clamp(
-    Number(
-      (
-        durationBeforeEngineerReduction -
-        engineerDurationReduction
-      ).toFixed(1),
-    ),
-    1.5,
-    16,
-  );
-  const engineerBonus = getEngineerFailureRiskReduction(game);
-  const researcherContribution = getResearchContribution(game);
-  const dataContribution = trainingDataUnits * data.quality * 1.65;
-  const failureRisk = clamp(
-    size.baseRisk +
-    (data.key === "web" ? 0.06 : data.key === "licensed" ? 0 : -0.02) -
-    engineerBonus +
-    parameterSteps * 0.03 +
-    memorySteps * 0.018 +
-    contextSteps * 0.012 +
-    goalComplexity * 0.01 +
-    trainingDataUnits * 0.004 +
-    effects.frontierRiskPenalty,
-    0.04,
-    0.82,
-  );
-  const inheritedCapabilityBase = baseModel
-    ? Math.max(size.baseCapability, baseModel.capability - getGoalAverage(baseModel.goals) + 2)
-    : size.baseCapability;
-  const currentCapabilityRating =
-    inheritedCapabilityBase +
-    data.capability +
-    game.upgrades.training * 4 +
-    archetype.modifiers.trainingCapabilityBonus +
-    effects.frontierCapabilityBonus +
-    parameterExpansion * 0.38 +
-    memoryExpansion * 0.32 +
-    contextExpansion * 0.12 +
-    trainingDataUnits * data.quality * 0.9 +
-    (baseModel ? 2 : 0);
-  const capability = getCapabilityFromCurrentRating(currentCapabilityRating, goals);
-  const inferenceBase = baseModel
-    ? Math.max(
-      size.baseInference,
-      baseModel.inferenceCost +
-      parameterSteps * 0.18 +
-      memorySteps * 0.1 +
-      contextSteps * 0.04 -
-      getGoalIntensity(goals, "speed") * 1.2 +
-      getGoalIntensity(goals, "agentic") * 0.2,
-    )
-    : size.baseInference;
-  const inferenceCost = Number(
-    clamp(inferenceBase - game.headcount.engineers * 0.05 - game.upgrades.inference * 0.22, 0.5, 7).toFixed(2),
-  );
-  const trust = Math.round(
-    clamp(
-      (baseModel ? baseModel.trust : 50) +
-      data.trust +
-      game.headcount.engineers * 2 +
-      (game.trust - 50) * 0.2 -
-      parameterSteps -
-      contextSteps * 0.25 +
-      trainingDataUnits * data.quality * 0.9 +
-      getGoalIntensity(goals, "accuracy") * 8 +
-      getGoalIntensity(goals, "reasoning") * 4 -
-      getGoalIntensity(goals, "speed") * 2.4 +
-      rand(-4, 4),
-      20,
-      98,
-    ),
-  );
-  const baseDevelopmentCost =
-    computeNeed * totalMonths * (BASE_POD_COST + SURGE_POD_COST * 0.35) +
-    trainingDataUnits * getDatasetPurchaseCost(data.key, "small") +
-    parameterSteps * 650000 +
-    memorySteps * 325000 +
-    contextSteps * 180000;
-  const goalDevelopmentCost = getGoalDevelopmentCost(
-    game.goalEconomics,
-    goals,
-    baseDevelopmentCost,
-    baseModel?.goals ?? null,
-  );
-  
-  let reliabilityDollarCost = 0;
-  RELIABILITY_TIER_IDS.forEach((tierId) => {
-    const tierDef = RELIABILITY_TIERS[tierId];
-    const val = game.trainingConfig.reliability[tierId];
-    if (val > 0) {
-      reliabilityDollarCost += tierDef.baseConstantMillions * 1000000 * Math.pow(1 / (1 - val), tierDef.exponent);
-    }
-  });
-
-  const expectedResearchDiscountRate = game.headcount.researchers * 0.00275;
-  const projectedEquivalentCost = Math.round(
-    (baseDevelopmentCost + goalDevelopmentCost.totalCost + reliabilityDollarCost) * Math.max(0.1, 1 - expectedResearchDiscountRate),
-  );
-
-  return {
-    computeNeed,
-    totalMonths,
-    capability,
-    inferenceCost,
-    trust,
-    failureRisk,
-    projectedEquivalentCost,
-    targetMemorySize,
-    targetParameterScale,
-    targetContextWindow,
-    trainingDataUnits,
-    maxMemorySize,
-    maxParameterScale: parameterLimit,
-    maxContextWindow,
-    researcherContribution,
-    engineerDurationReduction,
-    engineerRiskReduction: engineerBonus,
-    engineerTrainingMultiplier: getEngineerTrainingMultiplier(game.engineerTrainingLevel),
-    dataContribution: Math.round(dataContribution),
-  };
+  return calculateRunPreviewSystem(game);
 }
 
 function createRunEvent(run: ActiveRun): PendingEvent {
@@ -1717,211 +1354,7 @@ function applyEventChoice(game: GameState, event: PendingEvent, choiceKey: strin
 }
 
 export function settleGlobalMarket(game: GameState, servingPressure: number) {
-  const archetype = getArchetype(game);
-
-  const contenders: {
-    id: string;
-    model: ModelState | CompetitorModelState;
-    price: number;
-    isPlayer: boolean;
-    productType?: ProductTypeId;
-    salesMultiplier: number;
-  }[] = [];
-
-  (["chatbot", "api"] as ProductTypeId[]).forEach(type => {
-    const product = game.products[type];
-    const productPrice = product.price;
-    const marketingSpendMultiplier = game.marketingBudgetMillions > 0 ? getMarketingSpendMultiplier(game.marketingBudgetMillions, type === "chatbot" ? 1.0 : 3.0) : 1;
-    const sales = game.headcount.sales;
-    const gtm = game.upgrades.gtm;
-    const distribution = type === "chatbot" ? game.distribution.consumer : game.distribution.enterprise;
-    const visibility = 1.0 + (distribution * 0.04) + (sales * 0.05) + (gtm * 0.1) + (marketingSpendMultiplier * 0.5) + (game.trust * 0.005) + (archetype.modifiers[`${type}AcquisitionMultiplier` as keyof ArchetypeModifiers] as number - 1);
-
-    product.modelIds.forEach(modelId => {
-      const model = getModelById(game, modelId);
-      if (model) {
-        contenders.push({
-          id: `player_${type}_${model.id}`,
-          model,
-          price: product.modelPrices[model.id] ?? productPrice,
-          isPlayer: true,
-          productType: type,
-          salesMultiplier: visibility
-        });
-      }
-    });
-  });
-
-  Object.values(game.competitorCompanies).forEach((company) => {
-    if (company.models.length > 0) {
-      company.models.slice(0, 2).forEach((compModel, i) => {
-        if (compModel.chatPrice) {
-          contenders.push({
-            id: `comp_${company.id}_${i}_chat`,
-            model: compModel,
-            price: compModel.chatPrice,
-            isPlayer: false,
-            productType: "chatbot",
-            salesMultiplier: 1.0 + (i === 1 ? -0.4 : 0)
-          });
-        }
-        if (compModel.apiPrice) {
-          contenders.push({
-            id: `comp_${company.id}_${i}_api`,
-            model: compModel,
-            price: compModel.apiPrice,
-            isPlayer: false,
-            productType: "api",
-            salesMultiplier: 1.0 + (i === 1 ? -0.4 : 0)
-          });
-        }
-      });
-    }
-  });
-
-  if (game.products.chatbot.subscriptionPlans) {
-    game.products.chatbot.subscriptionPlans.forEach(plan => {
-      plan.subscribers = 0;
-      plan.revenue = 0;
-      plan.profit = 0;
-      plan.tokenUsageMillions = 0;
-    });
-  }
-
-  const productDeltas = {
-    chatbot: { users: 0, acq: 0, churn: 0, cost: 0, revenue: 0, prevUsers: game.products.chatbot.activeUsers },
-    api: { users: 0, acq: 0, churn: 0, cost: 0, revenue: 0, prevUsers: game.products.api.activeUsers }
-  };
-
-  GLOBAL_COHORT_IDS.forEach((cohortId) => {
-    const cohort = game.globalCohorts[cohortId];
-    if (!cohort) return;
-    let totalAppeal = 0;
-    const appealScores = contenders.map(contender => {
-      const model = contender.model;
-      if (contender.productType === "chatbot" && cohort.category !== "Consumer") return { contender, appeal: 0, currentPlan: null as SubscriptionPlan | null, usedTokensM: 0, evaluatedPrice: 0, fittingPlans: null as SubscriptionPlan[] | null, planWeights: null as number[] | null };
-      if (contender.productType === "api" && cohort.category !== "Business") return { contender, appeal: 0, currentPlan: null as SubscriptionPlan | null, usedTokensM: 0, evaluatedPrice: 0, fittingPlans: null as SubscriptionPlan[] | null, planWeights: null as number[] | null };
-
-      let weighted_reliability_score = 1.0;
-      Object.entries(cohort.reliabilityWeights).forEach(([tier, weight]) => {
-        weighted_reliability_score += (model.reliability[tier as ReliabilityTierId] || 0) * (weight as number);
-      });
-
-      let baseAppeal = (model.capability * weighted_reliability_score) * cohort.baseCapabilityWeight;
-      Object.entries(cohort.weights).forEach(([goal, weight]) => {
-        if (weight > 0 && model.goals[goal as ModelGoalId] !== undefined) {
-          baseAppeal += model.goals[goal as ModelGoalId] * (weight as number) * 10;
-        }
-      });
-
-      let affinityMultiplier = 1.0;
-      let evaluatedPrice = contender.price;
-      let currentPlan: SubscriptionPlan | null = null;
-      let neededTokensM = (cohort.sessionsPerMonth * cohort.tokensPerSession) / 1000000;
-      let usedTokensM = neededTokensM;
-      let fittingPlans: SubscriptionPlan[] | null = null;
-      let planWeights: number[] | null = null;
-
-      if (contender.isPlayer && contender.productType === "chatbot" && game.products.chatbot.subscriptionPlans?.length) {
-         const sortedPlans = [...game.products.chatbot.subscriptionPlans].sort((a,b) => (a.price || 0) - (b.price || 0));
-         const fitting = sortedPlans.filter(p => (p.tokenLimitMillions || 0) >= (neededTokensM || 0));
-         if (fitting.length > 0) {
-            // Use cheapest fitting plan's price for appeal/price-penalty calculation
-            currentPlan = fitting[0];
-            evaluatedPrice = currentPlan.price || 0;
-            if (fitting.length > 1) {
-               // Pre-compute softmax weights so users spread across all fitting tiers
-               const lambda = cohort.priceSensitivity * 0.02;
-               planWeights = fitting.map(p => Math.exp(-lambda * (p.price || 0)));
-               fittingPlans = fitting;
-            }
-         } else {
-            currentPlan = sortedPlans[sortedPlans.length - 1]; // highest plan
-            evaluatedPrice = currentPlan.price || 0;
-            usedTokensM = currentPlan.tokenLimitMillions || 0; // soft cap limits
-            affinityMultiplier = 0.5; // penalty for low token limit vs what cohort demands
-         }
-      }
-
-      const relativePrice = evaluatedPrice / 18.0;
-      const expectedPrice = 1.0;
-      const priceDelta = relativePrice - expectedPrice;
-      const pricePenalty = Math.max(-10, priceDelta * 15 * cohort.priceSensitivity);
-
-      let appeal = Math.max(1, (baseAppeal - pricePenalty) * affinityMultiplier);
-      appeal *= contender.salesMultiplier;
-      totalAppeal += appeal;
-
-      return { contender, appeal, currentPlan, usedTokensM, evaluatedPrice, fittingPlans, planWeights };
-    });
-
-    appealScores.forEach(({ contender, appeal, currentPlan, usedTokensM, evaluatedPrice, fittingPlans, planWeights }) => {
-      const targetShare = totalAppeal > 0 ? appeal / totalAppeal : 0;
-      const targetUsers = cohort.population * targetShare;
-      const currentUsers = contender.model.subscribersByCohort[cohort.id] || 0;
-
-      const rawDelta = (targetUsers - currentUsers) * 0.18;
-      const expectedChurn = rawDelta < 0 ? Math.abs(currentUsers * 0.05) : 0;
-      const nextUsers = Math.max(0, currentUsers + rawDelta - expectedChurn);
-      const delta = nextUsers - currentUsers;
-
-      if (contender.isPlayer && contender.productType) {
-        productDeltas[contender.productType].users += nextUsers;
-        if (delta > 0) productDeltas[contender.productType].acq += delta;
-        if (delta < 0) productDeltas[contender.productType].churn += Math.abs(delta);
-
-        const cWindowScale = Math.max(1, contender.model.contextWindow / 8);
-        const contextScaledTokensM = (usedTokensM || 0) * cWindowScale;
-
-        if (fittingPlans && planWeights && fittingPlans.length > 1) {
-          // Distribute users across all fitting tiers proportional to softmax weights
-          const totalW = planWeights.reduce((s, w) => s + w, 0);
-          fittingPlans.forEach((plan, i) => {
-            const share = planWeights![i] / totalW;
-            const usersForPlan = (nextUsers || 0) * share;
-            plan.subscribers += usersForPlan;
-            plan.revenue += usersForPlan * (plan.price || 0);
-            plan.tokenUsageMillions += usersForPlan * contextScaledTokensM;
-            productDeltas[contender.productType!].revenue += usersForPlan * (plan.price || 0);
-          });
-        } else if (currentPlan) {
-           currentPlan.subscribers += nextUsers || 0;
-           currentPlan.revenue += (nextUsers || 0) * (evaluatedPrice || 0);
-           currentPlan.tokenUsageMillions += (nextUsers || 0) * contextScaledTokensM;
-           productDeltas[contender.productType].revenue += (nextUsers || 0) * (evaluatedPrice || 0);
-        } else {
-           const metrics = getBlendedModelMetrics(game, game.products[contender.productType]);
-           if (metrics) {
-             productDeltas[contender.productType].revenue += (nextUsers || 0) * (evaluatedPrice || 0);
-           }
-        }
-      }
-      contender.model.subscribersByCohort[cohort.id] = nextUsers;
-    });
-  });
-
-  (["chatbot", "api"] as ProductTypeId[]).forEach(type => {
-    const product = game.products[type];
-    const delta = productDeltas[type];
-    const activeUsers = Math.max(0, Math.round(delta.users));
-    product.activeUsers = activeUsers;
-    product.revenue = Math.max(0, Math.round(delta.revenue));
-    product.acquisition = Math.round(delta.acq);
-
-    if (type === "chatbot" && product.subscriptionPlans) {
-      product.tokenUsageMillions = product.subscriptionPlans.reduce((sum, plan) => sum + plan.tokenUsageMillions, 0);
-    }
-
-    const abstractChurn = Math.round(delta.churn) + Math.round(activeUsers * 0.02);
-    product.churn = activeUsers > 0 ? Number((abstractChurn / (activeUsers + abstractChurn)).toFixed(3)) : 0;
-
-    const metrics = getBlendedModelMetrics(game, product);
-    const usage = getProductComputeUsage(game, product, metrics);
-    product.computeDemand = usage.demand;
-    product.tokenUsageMillions = usage.tokensMillions;
-    product.computeCost = Math.round(product.computeDemand * 2500);
-    product.trust = metrics ? clamp(Math.round(metrics.trust * 0.55 + game.trust * 0.45 - servingPressure * 14), 10, 99) : clamp(game.trust, 10, 99);
-  });
+  settleGlobalMarketSystem(game, servingPressure);
 }
 
 export function calculateFundingOffer(game: GameState, monthlyRevenue: number) {
@@ -2260,69 +1693,7 @@ export function bumpTrainingVersionName(game: GameState) {
 }
 
 export function launchRun(game: GameState) {
-  const next = copyGame(game);
-  const size = MODEL_SIZES[next.trainingConfig.size];
-  const dataTier = next.trainingConfig.dataTier;
-  const estimate = calculateRunPreview(next);
-  const baseModel =
-    next.trainingConfig.mode === "upgrade" || next.trainingConfig.mode === "branch"
-      ? getModelById(next, next.trainingConfig.baseModelId)
-      : null;
-  if (next.dataInventory[dataTier] < next.trainingConfig.trainingDataUnits) return game;
-  if (next.activeRuns.length >= 3) return game;
-  if ((next.trainingConfig.mode === "upgrade" || next.trainingConfig.mode === "branch") && !baseModel) return game;
-
-  const runName = next.trainingConfig.name.trim() || baseModel?.name || "Model";
-  const researcherDiscountPerResearcher = rand(0.001, 0.0045);
-  const upfrontDevelopmentCost = Math.round(estimate.projectedEquivalentCost * 0.3);
-  const remainingDevelopmentCost = Math.max(0, estimate.projectedEquivalentCost - upfrontDevelopmentCost);
-  if (next.cash < upfrontDevelopmentCost) return game;
-
-  next.cash -= upfrontDevelopmentCost;
-  const run: ActiveRun = {
-    id: next.nextId++,
-    mode: next.trainingConfig.mode,
-    baseModelId: baseModel?.id ?? null,
-    familyId: next.trainingConfig.mode === "branch" ? null : baseModel ? baseModel.familyId : null,
-    name: runName,
-    targetVersion: next.trainingConfig.mode === "new" ? 1 : next.trainingConfig.targetVersion,
-    totalDevelopmentCost: estimate.projectedEquivalentCost,
-    sizeKey: size.key,
-    dataTier,
-    computeNeed: estimate.computeNeed,
-    totalMonths: estimate.totalMonths,
-    monthsElapsed: 0,
-    projectedCapability: estimate.capability,
-    projectedInferenceCost: estimate.inferenceCost,
-    projectedTrust: estimate.trust,
-    baseFailureRisk: estimate.failureRisk,
-    riskModifier: 0,
-    capabilityModifier: 0,
-    trustModifier: 0,
-    targetMemorySize: estimate.targetMemorySize,
-    targetParameterScale: estimate.targetParameterScale,
-    targetContextWindow: estimate.targetContextWindow,
-    goals: { ...next.trainingConfig.goals },
-    trainingDataUnits: estimate.trainingDataUnits,
-    remainingDevelopmentCost,
-    researcherDiscountPerResearcher,
-    lossSeverity: 0,
-    eventTriggered: false,
-    lossCurve: generateLossCurve(estimate.totalMonths),
-    reliability: { ...next.trainingConfig.reliability },
-  };
-
-  next.activeRuns.push(run);
-  addNotification(
-    next,
-    `Launched ${run.name}: ${size.name} model on ${DATA_TIERS[dataTier].name}. Upfront spend ${money(
-      upfrontDevelopmentCost,
-    )}, remaining ${money(remainingDevelopmentCost)} over development. Projected risk ${pct(estimate.failureRisk)}. Research discount ${(
-      researcherDiscountPerResearcher * 100
-    ).toFixed(2)}% per researcher.`,
-    "info",
-  );
-  return next;
+  return launchRunSystem(game);
 }
 
 export function attachModelToProduct(game: GameState, productKey: ProductTypeId, modelId: string) {
@@ -2374,15 +1745,17 @@ export function attachModelToProduct(game: GameState, productKey: ProductTypeId,
 }
 
 export function updateSubscriptionPlan(game: GameState, planId: string, patch: Partial<SubscriptionPlan>) {
-  const product = game.products.chatbot;
+  const next = copyGame(game);
+  const product = next.products.chatbot;
   if (!product.subscriptionPlans) return game;
-  const target = product.subscriptionPlans.find(p => p.id === planId);
+  const target = product.subscriptionPlans.find((plan) => plan.id === planId);
   if (target) Object.assign(target, patch);
-  return { ...game };
+  return next;
 }
 
 export function createSubscriptionPlan(game: GameState) {
-  const product = game.products.chatbot;
+  const next = copyGame(game);
+  const product = next.products.chatbot;
   if (!product.subscriptionPlans) product.subscriptionPlans = [];
   const nextId = `plan_${Date.now()}`;
   product.subscriptionPlans.push({
@@ -2395,14 +1768,15 @@ export function createSubscriptionPlan(game: GameState) {
     profit: 0,
     tokenUsageMillions: 0
   });
-  return { ...game };
+  return next;
 }
 
 export function deleteSubscriptionPlan(game: GameState, planId: string) {
-  const product = game.products.chatbot;
+  const next = copyGame(game);
+  const product = next.products.chatbot;
   if (!product.subscriptionPlans) return game;
-  product.subscriptionPlans = product.subscriptionPlans.filter(p => p.id !== planId);
-  return { ...game };
+  product.subscriptionPlans = product.subscriptionPlans.filter((plan) => plan.id !== planId);
+  return next;
 }
 
 export function updateProductPrice(game: GameState, productKey: ProductTypeId, price: string, modelId?: string) {
