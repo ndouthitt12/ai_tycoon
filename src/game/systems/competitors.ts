@@ -331,7 +331,7 @@ function buildCompetitorRelease(
   availableBudget -= memoryStepBudget;
   const contextStepBudget = availableBudget;
 
-  const maxMemorySize = getMemorySizeLimit(baseMemorySize, 6);
+  const maxMemorySize = getMemorySizeLimit(baseMemorySize, 6, trainingDataUnits);
   const maxContextWindow = getContextWindowLimit(baseContextWindow, maxMemorySize, baseMemorySize) + 128;
 
   let rawParameterSteps = paramStepBudget / paramStepCost;

@@ -136,6 +136,16 @@ function getCapabilityFromCurrentRating(currentRating: number, goals: TrainingCo
   return Math.round(Math.max(1, currentRating + getGoalAverage(goals)));
 }
 
+export function getGoalCapabilityLift(goals: TrainingConfig["goals"]) {
+  const goalTotal = getGoalTotal(goals);
+  const activeGoals = getActiveGoalCount(goals);
+  const baselineTotal = Object.keys(goals).length;
+  const extraIntensity = Math.max(0, goalTotal - baselineTotal);
+  const goalComplexity = Math.log2(goalTotal + 1);
+
+  return goalComplexity * 2.8 + activeGoals * 0.45 + extraIntensity * 0.085;
+}
+
 function generateLossCurve(totalMonths: number, severity = 0) {
   const points: number[] = [];
   let current = rand(2.4, 3.2);
@@ -171,8 +181,9 @@ export function getParameterStep(size: keyof typeof BASE_PARAMETER_SCALE) {
 }
 
 function getParameterCapacitySteps(size: keyof typeof BASE_PARAMETER_SCALE, trainingDataUnits: number) {
-  const normalizedUnits = clamp(Math.round(trainingDataUnits), 1, 24);
-  return 4 + normalizedUnits * (size === "frontier" ? 1.4 : size === "large" ? 1.7 : 2);
+  const normalizedUnits = Math.max(1, Math.round(trainingDataUnits));
+  const dataScale = Math.log2(normalizedUnits);
+  return 4 + dataScale * (size === "frontier" ? 1.4 : size === "large" ? 1.7 : 2);
 }
 
 export function getParameterScaleLimit(size: keyof typeof BASE_PARAMETER_SCALE, baseParameterScale: number, trainingDataUnits: number) {
@@ -187,8 +198,9 @@ export function getTrainingTargets(size: keyof typeof BASE_MEMORY_SIZE) {
   };
 }
 
-export function getMemorySizeLimit(baseMemorySize: number, inferenceUpgradeLevel: number) {
-  return baseMemorySize + 64 + inferenceUpgradeLevel * 16;
+export function getMemorySizeLimit(baseMemorySize: number, inferenceUpgradeLevel: number, trainingDataUnits = 1) {
+  const dataMemoryBonus = Math.floor(Math.log2(Math.max(1, trainingDataUnits))) * 8;
+  return baseMemorySize + 64 + inferenceUpgradeLevel * 16 + dataMemoryBonus;
 }
 
 export function getContextWindowLimit(baseContextWindow: number, targetMemorySize: number, baseMemorySize: number) {
@@ -255,7 +267,7 @@ export function calculateRunPreview(game: GameState) {
   const baseMemorySize = baseModel ? baseModel.memorySize : getBaseMemorySize(size.key);
   const baseParameterScale = baseModel ? baseModel.parameterScale : getBaseParameterScale(size.key);
   const baseContextWindow = baseModel ? baseModel.contextWindow : getBaseContextWindow(size.key);
-  const maxMemorySize = getMemorySizeLimit(baseMemorySize, game.upgrades.inference);
+  const maxMemorySize = getMemorySizeLimit(baseMemorySize, game.upgrades.inference, trainingDataUnits);
   const targetMemorySize = clamp(game.trainingConfig.targetMemorySize, baseMemorySize, maxMemorySize);
   const memoryExpansion = Math.max(0, targetMemorySize - baseMemorySize);
   const parameterLimit = getParameterScaleLimit(size.key, baseParameterScale, trainingDataUnits);
@@ -315,6 +327,7 @@ export function calculateRunPreview(game: GameState) {
     memoryExpansion * TRAINING_MEMORY_EXPANSION_CAPABILITY +
     contextExpansion * TRAINING_CONTEXT_EXPANSION_CAPABILITY +
     trainingDataUnits * data.quality * TRAINING_DATA_CAPABILITY +
+    getGoalCapabilityLift(goals) +
     (baseModel ? 2 : 0);
   const capability = getCapabilityFromCurrentRating(currentCapabilityRating, goals);
   const inferenceBase = baseModel
@@ -353,7 +366,9 @@ export function calculateRunPreview(game: GameState) {
     trainingDataUnits * getDatasetPurchaseCost(data.key, "small") +
     parameterSteps * PARAMETER_STEP_BASE_COST +
     memorySteps * MEMORY_STEP_BASE_COST +
-    contextSteps * CONTEXT_STEP_BASE_COST;
+    contextSteps * CONTEXT_STEP_BASE_COST +
+    Math.max(0, goalTotal - Object.keys(goals).length) * 25000 +
+    goalComplexity * 350000;
   const goalDevelopmentCost = getGoalDevelopmentCost(
     game.goalEconomics,
     goals,

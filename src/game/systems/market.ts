@@ -190,6 +190,39 @@ function getChatbotConversationDepthMultiplier(cohort: CohortDef) {
     : CHATBOT_STANDARD_CONVERSATION_MULTIPLIER;
 }
 
+function getCohortTokenDemandMillions(cohort: CohortDef, productType: ProductTypeId) {
+  if (productType === "api") {
+    return Math.max(0, cohort.baseTokensPerMonthMillions || 0);
+  }
+
+  return (cohort.sessionsPerMonth * cohort.tokensPerSession * getChatbotConversationDepthMultiplier(cohort)) / 1000000;
+}
+
+function getEstimatedProductTokenUsage(game: GameState, product: ProductState) {
+  if (product.tokenUsageMillions > 0) return product.tokenUsageMillions;
+
+  if (product.type === "chatbot" && product.subscriptionPlans?.length) {
+    const planUsage = product.subscriptionPlans.reduce((sum, plan) => sum + plan.tokenUsageMillions, 0);
+    if (planUsage > 0) return planUsage;
+  }
+
+  const models = getProductModels(game, product);
+  if (!models.length) return 0;
+
+  return Object.values(game.globalCohorts).reduce((sum, cohort) => {
+    const isEligible =
+      (product.type === "chatbot" && cohort.category === "Consumer") ||
+      (product.type === "api" && cohort.category === "Business");
+    if (!isEligible) return sum;
+
+    const cohortSubscribers = models.reduce(
+      (modelSum, model) => modelSum + (model.subscribersByCohort[cohort.id] || 0),
+      0,
+    );
+    return sum + cohortSubscribers * getCohortTokenDemandMillions(cohort, product.type);
+  }, 0);
+}
+
 function getPlanCoverage(neededTokensM: number, tokenLimitMillions: number) {
   if (neededTokensM <= 0) return 1;
   return clamp(tokenLimitMillions / neededTokensM, 0, 1);
@@ -232,18 +265,22 @@ export function getProductComputeUsage(
   if (!metrics) return { demand: 0, tokensMillions: 0 };
 
   const contextPenalty = getContextPenalty(metrics.contextWindow);
-  const totalTokensMillions = product.tokenUsageMillions;
+  const totalTokensMillions = getEstimatedProductTokenUsage(game, product);
   const baseDemand = totalTokensMillions / CHATBOT_TOKENS_PER_POD_MILLIONS;
   const demand = baseDemand * metrics.inferenceCost * contextPenalty;
   return { demand, tokensMillions: totalTokensMillions };
 }
 
 export function getProjectedServingDemand(game: GameState) {
-  return Object.values(game.products).reduce((sum, product) => {
+  const projectedDemand = Object.values(game.products).reduce((sum, product) => {
     const metrics = getBlendedModelMetrics(game, product);
     const usage = getProductComputeUsage(game, product, metrics);
     return sum + usage.demand;
   }, 0);
+
+  if (projectedDemand > 0) return projectedDemand;
+  const hasLiveProducts = Object.values(game.products).some((product) => product.modelIds.length > 0);
+  return hasLiveProducts ? game.lastMonth.servingDemand : 0;
 }
 
 export function getMarketModelTable(game: GameState) {
@@ -451,11 +488,7 @@ export function settleGlobalMarket(game: GameState, servingPressure: number) {
       });
 
       const rawAppeal = Math.max(1, baseAppeal);
-      const baseSessionTokens = cohort.sessionsPerMonth * cohort.tokensPerSession;
-      const neededTokensM =
-        contender.productType === "chatbot"
-          ? (baseSessionTokens * getChatbotConversationDepthMultiplier(cohort)) / 1000000
-          : Math.max(0, cohort.baseTokensPerMonthMillions || 0);
+      const neededTokensM = getCohortTokenDemandMillions(cohort, contender.productType ?? "chatbot");
       const options: MarketPlanOption[] = [];
 
       if (contender.isPlayer && contender.productType === "chatbot" && game.products.chatbot.subscriptionPlans?.length) {

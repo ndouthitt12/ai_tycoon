@@ -51,7 +51,7 @@ import {
 } from "./types";
 import { getMarketCompanyTable as getMarketCompanyTableSystem, getMarketComparison as getMarketComparisonSystem, getMarketModelTable as getMarketModelTableSystem, getProductComputeUsage as getProductComputeUsageSystem, getProjectedServingDemand as getProjectedServingDemandSystem, settleGlobalMarket as settleGlobalMarketSystem, updateModelPerformance as updateModelPerformanceSystem } from "./systems/market";
 import { createInitialCompetitorCompanyState as createInitialCompetitorCompanyStateSystem, getCompetitorCompanyDefinition as getCompetitorCompanyDefinitionSystem, getCompetitorCompanyState as getCompetitorCompanyStateSystem, updateCompetitorCompanies as updateCompetitorCompaniesSystem } from "./systems/competitors";
-import { calculateRunPreview as calculateRunPreviewSystem, getContextWindowLimit as getContextWindowLimitSystem, getDatasetPurchaseCost as getDatasetPurchaseCostSystem, getMemorySizeLimit as getMemorySizeLimitSystem, getResearchContribution as getResearchContributionSystem, launchRun as launchRunSystem } from "./systems/training";
+import { calculateRunPreview as calculateRunPreviewSystem, getContextWindowLimit as getContextWindowLimitSystem, getDatasetPurchaseCost as getDatasetPurchaseCostSystem, getGoalCapabilityLift as getGoalCapabilityLiftSystem, getMemorySizeLimit as getMemorySizeLimitSystem, getResearchContribution as getResearchContributionSystem, launchRun as launchRunSystem } from "./systems/training";
 import { copyGame as copyGameSystem } from "./systems/state";
 
 export function clamp(value: number, min: number, max: number) {
@@ -91,23 +91,23 @@ export function pct(value: number) {
 }
 
 export function formatBigParams(value: number) {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}Qi`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}Qa`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}T`;
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}Qi`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}Qa`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(2)}T`;
   return `${value.toFixed(1)}B`;
 }
 
 export function formatBigMemory(value: number) {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}EB`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(0)}PB`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}TB`;
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}EB`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}PB`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(2)}TB`;
   return `${value.toFixed(0)} GB`;
 }
 
 export function formatBigContext(value: number) {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}T`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(0)}B`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}M`;
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}T`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}B`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(2)}M`;
   return `${value.toFixed(0)}K`;
 }
 
@@ -780,8 +780,8 @@ export function getUpgradeCost(key: UpgradeId, level: number) {
   return cost;
 }
 
-export function getMemorySizeLimit(baseMemorySize: number, inferenceUpgradeLevel: number) {
-  return getMemorySizeLimitSystem(baseMemorySize, inferenceUpgradeLevel);
+export function getMemorySizeLimit(baseMemorySize: number, inferenceUpgradeLevel: number, trainingDataUnits = 1) {
+  return getMemorySizeLimitSystem(baseMemorySize, inferenceUpgradeLevel, trainingDataUnits);
 }
 
 export function getContextWindowLimit(baseContextWindow: number, targetMemorySize: number, baseMemorySize: number) {
@@ -1668,7 +1668,7 @@ export function updateTrainingConfig(game: GameState, patch: Partial<TrainingCon
   next.trainingConfig.targetMemorySize = clamp(
     next.trainingConfig.targetMemorySize,
     memoryBase,
-    getMemorySizeLimit(memoryBase, next.upgrades.inference),
+    getMemorySizeLimit(memoryBase, next.upgrades.inference, next.trainingConfig.trainingDataUnits),
   );
   const parameterBase = baseModel ? baseModel.parameterScale : getBaseParameterScale(next.trainingConfig.size);
   next.trainingConfig.targetParameterScale = clamp(
@@ -1827,6 +1827,33 @@ export function buildDatacenter(game: GameState, pods: number, quantity = 1) {
   return next;
 }
 
+export function sellDatacenters(game: GameState, pods: number, quantity = 1, pricePerDatacenter = 0) {
+  const normalizedPods = clamp(Math.round(pods), 8, 240);
+  const normalizedQuantity = Math.max(1, Math.round(quantity));
+  const normalizedPrice = Math.max(0, Math.round(pricePerDatacenter));
+  const matchingDatacenters = game.cloud.datacenters
+    .filter((datacenter) => datacenter.pods === normalizedPods)
+    .sort((left, right) => left.monthBuilt - right.monthBuilt || left.id - right.id);
+  const sellCount = Math.min(normalizedQuantity, matchingDatacenters.length);
+  if (sellCount <= 0) return game;
+
+  const next = copyGame(game);
+  const soldIds = new Set(matchingDatacenters.slice(0, sellCount).map((datacenter) => datacenter.id));
+  next.cloud.datacenters = next.cloud.datacenters.filter((datacenter) => !soldIds.has(datacenter.id));
+  next.cloud.reservedPods = Math.max(0, next.cloud.reservedPods - normalizedPods * sellCount);
+  next.cash += normalizedPrice * sellCount;
+
+  const totalProceeds = normalizedPrice * sellCount;
+  addNotification(
+    next,
+    sellCount === 1
+      ? `Sold a ${normalizedPods}-pod datacenter for ${money(totalProceeds)}.`
+      : `Sold ${sellCount} datacenters with ${normalizedPods} pods each for ${money(totalProceeds)} total.`,
+    totalProceeds > 0 ? "good" : "warning",
+  );
+  return next;
+}
+
 export function updateTrainingAllocation(game: GameState, value: number) {
   const next = copyGame(game);
   next.cloud.trainingPct = clamp(value, 15, 85);
@@ -1846,11 +1873,17 @@ export function resolvePendingEvent(game: GameState, choiceKey: string) {
 
 export function chooseBoardDirective(game: GameState, directiveId: BoardDirectiveId) {
   const next = copyGame(game);
-  if (!next.pendingBoardReview) return game;
+  const previousDirective = next.currentDirective;
   next.currentDirective = directiveId;
   next.directiveTurnsRemaining = 3;
   next.pendingBoardReview = null;
-  addNotification(next, `Board directive set: ${BOARD_DIRECTIVES[directiveId].name} for the next quarter.`, "good");
+  addNotification(
+    next,
+    previousDirective === directiveId
+      ? `Board directive refreshed: ${BOARD_DIRECTIVES[directiveId].name} for the next quarter.`
+      : `Board directive set: ${BOARD_DIRECTIVES[directiveId].name} for the next quarter.`,
+    "good",
+  );
   return next;
 }
 
@@ -1927,7 +1960,7 @@ function processRivals(game: GameState) {
 }
 
 export function advanceMonth(game: GameState) {
-  if (game.status !== "playing" || game.pendingEvent || game.pendingBoardReview) {
+  if (game.status !== "playing" || game.pendingEvent) {
     return game;
   }
 
@@ -2062,7 +2095,8 @@ export function advanceMonth(game: GameState) {
       parameterExpansion * 0.38 +
       memoryExpansion * 0.32 +
       contextExpansion * 0.12 +
-      run.trainingDataUnits * data.quality * 0.9;
+      run.trainingDataUnits * data.quality * 0.9 +
+      getGoalCapabilityLiftSystem(goals);
     const capability = getCapabilityFromCurrentRating(currentCapabilityRating, goals);
     const inferenceBase = baseModel
       ? Math.max(
@@ -2298,7 +2332,7 @@ export function advanceMonth(game: GameState) {
 
   if (next.status === "playing" && (next.turn - 1) % 3 === 0) {
     next.pendingBoardReview = createPendingBoardReview(next);
-    addNotification(next, `Quarter ${next.pendingBoardReview.quarter} board review is ready. Pick the next directive.`, "warning");
+    addNotification(next, `Quarter ${next.pendingBoardReview.quarter} board memo updated. Review it in Strategy when needed.`, "info");
   }
 
   return next;

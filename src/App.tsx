@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { ARCHETYPES, BOARD_DIRECTIVES } from "./game/defs";
 import {
@@ -22,6 +22,7 @@ import {
   raiseFunding,
   resolvePendingEvent,
   shutdownRun,
+  sellDatacenters,
   trainEngineers,
   updateCompetitorAdmin,
   updateMarketingBudget,
@@ -59,8 +60,8 @@ export default function AICompanyTycoonStep2() {
   const [app, setApp] = useState<AppState>(INITIAL_STATE);
   const game = app.game;
 
-  const preview = useMemo(() => (game ? calculateRunPreview(game) : null), [game]);
-  const projectedServingDemand = useMemo(() => (game ? getProjectedServingDemand(game) : 0), [game]);
+  const preview = game ? calculateRunPreview(game) : null;
+  const projectedServingDemand = game ? getProjectedServingDemand(game) : 0;
 
   const headcountTotal = game ? getHeadcountTotal(game) : 0;
   const payroll = game ? getPayroll(game) : 0;
@@ -105,7 +106,7 @@ export default function AICompanyTycoonStep2() {
 
   const archetype = ARCHETYPES[game.archetype];
   const currentDirective = game.currentDirective ? BOARD_DIRECTIVES[game.currentDirective] : null;
-  const advanceDisabled = Boolean(game.pendingEvent) || Boolean(game.pendingBoardReview) || game.status !== "playing";
+  const advanceDisabled = Boolean(game.pendingEvent) || game.status !== "playing";
 
   return (
     <AppShell>
@@ -188,7 +189,13 @@ export default function AICompanyTycoonStep2() {
             />
           ) : null}
 
-          {app.screen === "strategy" ? <StrategyScreen game={game} onUpdateMarketingBudget={(value) => updateGame((current) => updateMarketingBudget(current, value))} /> : null}
+          {app.screen === "strategy" ? (
+            <StrategyScreen
+              game={game}
+              onUpdateMarketingBudget={(value) => updateGame((current) => updateMarketingBudget(current, value))}
+              onChooseBoardDirective={(directiveId) => updateGame((current) => chooseBoardDirective(current, directiveId))}
+            />
+          ) : null}
 
           {app.screen === "lab" ? (
             <LabScreen
@@ -209,6 +216,9 @@ export default function AICompanyTycoonStep2() {
               game={game}
               projectedServingDemand={projectedServingDemand}
               onBuildDatacenter={(pods, quantity) => updateGame((current) => buildDatacenter(current, pods, quantity))}
+              onSellDatacenters={(pods, quantity, pricePerDatacenter) =>
+                updateGame((current) => sellDatacenters(current, pods, quantity, pricePerDatacenter))
+              }
               onUpdateTrainingAllocation={(value) => updateGame((current) => updateTrainingAllocation(current, value))}
               onUpdateCloudRentalPrice={(price) => updateGame((current) => updateCloudRentalPrice(current, price))}
               onShutdownRun={(runId) => updateGame((current) => shutdownRun(current, runId))}
@@ -260,39 +270,6 @@ export default function AICompanyTycoonStep2() {
                 >
                   <div className="text-lg font-semibold text-slate-50">{choice.label}</div>
                   <div className="mt-1 text-sm text-slate-400">{choice.effect}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {game.pendingBoardReview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 px-4 py-6 backdrop-blur-sm">
-          <div className="w-full max-w-4xl rounded-[28px] border border-cyan-500/20 bg-slate-900 p-6 shadow-2xl shadow-black/40">
-            <div className="text-[11px] uppercase tracking-[0.24em] text-cyan-300">Quarterly Board Review</div>
-            <div className="mt-2 text-3xl font-semibold text-slate-50">Quarter {game.pendingBoardReview.quarter}</div>
-            <div className="mt-4 grid gap-3">
-              {game.pendingBoardReview.reasons.map((reason) => (
-                <div key={reason} className="rounded-xl border border-slate-800 bg-slate-950/55 p-3 text-sm text-slate-300">
-                  {reason}
-                </div>
-              ))}
-            </div>
-            <div className="mt-6 grid gap-4 md:grid-cols-2">
-              {Object.values(BOARD_DIRECTIVES).map((directive) => (
-                <button
-                  key={directive.id}
-                  onClick={() => updateGame((current) => chooseBoardDirective(current, directive.id as BoardDirectiveId))}
-                  className="rounded-2xl border border-slate-700 bg-slate-950/80 p-4 text-left transition hover:border-cyan-400/30 hover:bg-slate-950"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-lg font-semibold text-slate-50">{directive.name}</div>
-                    <Badge tone="default">{directive.id.split("_").join(" ")}</Badge>
-                  </div>
-                  <div className="mt-2 text-sm text-slate-400">{directive.summary}</div>
-                  <div className="mt-4 text-sm text-emerald-300">{directive.upside}</div>
-                  <div className="mt-2 text-sm text-slate-500">{directive.downside}</div>
                 </button>
               ))}
             </div>

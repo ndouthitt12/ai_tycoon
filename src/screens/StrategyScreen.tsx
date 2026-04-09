@@ -1,9 +1,17 @@
 import { ARCHETYPES, BOARD_DIRECTIVES } from "../game/defs";
 import { getMarketingSpendMultiplier, getQuarterNumber, money } from "../game/sim";
-import { GameState } from "../game/types";
-import { Badge, Meter, Panel, StatRow } from "../components/ui";
+import { BoardDirectiveId, GameState } from "../game/types";
+import { Badge, Button, Meter, Panel, StatRow } from "../components/ui";
 
-export function StrategyScreen({ game, onUpdateMarketingBudget }: { game: GameState; onUpdateMarketingBudget: (value: number) => void }) {
+export function StrategyScreen({
+  game,
+  onUpdateMarketingBudget,
+  onChooseBoardDirective,
+}: {
+  game: GameState;
+  onUpdateMarketingBudget: (value: number) => void;
+  onChooseBoardDirective: (directiveId: BoardDirectiveId) => void;
+}) {
   const archetype = ARCHETYPES[game.archetype];
   const currentDirective = game.currentDirective ? BOARD_DIRECTIVES[game.currentDirective] : null;
   const nextBoardReviewTurn = 3 - ((game.turn - 1) % 3);
@@ -87,10 +95,10 @@ export function StrategyScreen({ game, onUpdateMarketingBudget }: { game: GameSt
       </div>
 
       <div className="space-y-6">
-        <Panel title="Board Direction" subtitle="Quarterly reviews force a strategic decision instead of endless tactical tuning.">
+        <Panel title="Board Direction" subtitle="Set or change the company's strategic stance here whenever you want.">
           <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
             <StatRow label="Current Quarter" value={getQuarterNumber(game.turn)} />
-            <StatRow label="Months To Review" value={game.pendingBoardReview ? "Ready now" : nextBoardReviewTurn} />
+            <StatRow label="Next Board Memo" value={`${nextBoardReviewTurn} mo`} />
             <StatRow label="Board Pressure" value={game.boardPressure.toFixed(1)} tone={game.boardPressure < 40 ? "good" : game.boardPressure < 70 ? "warning" : "bad"} />
             {currentDirective ? (
               <>
@@ -110,9 +118,33 @@ export function StrategyScreen({ game, onUpdateMarketingBudget }: { game: GameSt
               </>
             ) : (
               <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/30 p-4 text-sm text-slate-400">
-                No active directive. The next board review will force a strategic stance.
+                No active directive. Choose one below whenever you want to set the company stance.
               </div>
             )}
+
+            <div className="grid gap-3 md:grid-cols-2">
+              {Object.values(BOARD_DIRECTIVES).map((directive) => {
+                const isActive = game.currentDirective === directive.id;
+                return (
+                  <div key={directive.id} className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-slate-50">{directive.name}</div>
+                      <Badge tone={isActive ? "good" : "default"}>
+                        {isActive ? "Active" : directive.id.split("_").join(" ")}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 text-sm text-slate-400">{directive.summary}</div>
+                    <div className="mt-4 text-sm text-emerald-300">{directive.upside}</div>
+                    <div className="mt-2 text-sm text-slate-500">{directive.downside}</div>
+                    <div className="mt-4">
+                      <Button onClick={() => onChooseBoardDirective(directive.id)} variant={isActive ? "ghost" : "secondary"}>
+                        {isActive ? "Refresh Directive" : "Set Directive"}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </Panel>
 

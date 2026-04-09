@@ -9,6 +9,7 @@ export function ComputeScreen({
   game,
   projectedServingDemand,
   onBuildDatacenter,
+  onSellDatacenters,
   onUpdateTrainingAllocation,
   onUpdateCloudRentalPrice,
   onShutdownRun,
@@ -16,6 +17,7 @@ export function ComputeScreen({
   game: GameState;
   projectedServingDemand: number;
   onBuildDatacenter: (pods: number, quantity: number) => void;
+  onSellDatacenters: (pods: number, quantity: number, pricePerDatacenter: number) => void;
   onUpdateTrainingAllocation: (value: number) => void;
   onUpdateCloudRentalPrice: (price: number) => void;
   onShutdownRun: (runId: number) => void;
@@ -23,9 +25,27 @@ export function ComputeScreen({
   const [buildPods, setBuildPods] = useState(24);
   const [buildQuantity, setBuildQuantity] = useState(1);
   const [rentalPriceInput, setRentalPriceInput] = useState(String(game.cloudRental.pricePerPod || ""));
+  const [sellQuantityInputs, setSellQuantityInputs] = useState<Record<number, string>>({});
+  const [sellPriceInputs, setSellPriceInputs] = useState<Record<number, string>>({});
   const servingPct = 100 - game.cloud.trainingPct;
   const buildCost = getDatacenterBuildCost(buildPods);
   const totalBuildCost = buildCost * Math.max(1, Math.round(buildQuantity));
+  const datacenterGroups = Object.values(
+    game.cloud.datacenters.reduce<Record<number, { pods: number; count: number; totalBuildCost: number }>>((groups, datacenter) => {
+      const existing = groups[datacenter.pods];
+      if (existing) {
+        existing.count += 1;
+        existing.totalBuildCost += datacenter.buildCost;
+      } else {
+        groups[datacenter.pods] = {
+          pods: datacenter.pods,
+          count: 1,
+          totalBuildCost: datacenter.buildCost,
+        };
+      }
+      return groups;
+    }, {}),
+  ).sort((left, right) => right.pods - left.pods);
 
   // Estimated surplus: pods not being consumed by serving or training demand
   const trainingDemand = game.activeRuns.reduce((sum, run) => sum + run.computeNeed, 0);
@@ -47,6 +67,22 @@ export function ComputeScreen({
   function commitRentalPrice() {
     const parsed = parseInt(rentalPriceInput, 10);
     onUpdateCloudRentalPrice(isNaN(parsed) ? 0 : Math.max(0, parsed));
+  }
+
+  function getSellQuantityValue(pods: number) {
+    return sellQuantityInputs[pods] ?? "1";
+  }
+
+  function getSellPriceValue(pods: number, fallbackPrice: number) {
+    return sellPriceInputs[pods] ?? String(fallbackPrice);
+  }
+
+  function commitSell(pods: number, maxQuantity: number, fallbackPrice: number) {
+    const parsedQuantity = parseInt(getSellQuantityValue(pods), 10);
+    const parsedPrice = parseInt(getSellPriceValue(pods, fallbackPrice), 10);
+    const quantity = Math.min(maxQuantity, Math.max(1, isNaN(parsedQuantity) ? 1 : parsedQuantity));
+    const pricePerDatacenter = Math.max(0, isNaN(parsedPrice) ? fallbackPrice : parsedPrice);
+    onSellDatacenters(pods, quantity, pricePerDatacenter);
   }
 
   return (
@@ -180,6 +216,78 @@ export function ComputeScreen({
               <div className="text-sm text-slate-400">Datacenters Owned</div>
               <div className="mt-2 font-mono text-3xl font-semibold text-slate-50">{game.cloud.datacenters.length}</div>
             </div>
+            {datacenterGroups.length === 0 ? (
+              <div className="mt-4">
+                <EmptyState title="No datacenters online" body="Build cloud capacity first, then you can trim the fleet here." />
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {datacenterGroups.map((group) => {
+                  const averageBuildCost = Math.round(group.totalBuildCost / group.count);
+                  const sellQuantityValue = getSellQuantityValue(group.pods);
+                  const sellPriceValue = getSellPriceValue(group.pods, averageBuildCost);
+                  return (
+                    <div key={group.pods} className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-base font-semibold text-slate-50">{group.pods}-Pod Datacenters</div>
+                          <div className="mt-1 text-sm text-slate-400">
+                            {group.count} owned · Build cost basis {money(averageBuildCost)} each
+                          </div>
+                        </div>
+                        <Badge tone="default">{formatPods(group.pods * group.count)} pods installed</Badge>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 md:grid-cols-[0.8fr_1fr_auto]">
+                        <label className="block text-sm">
+                          <div className="mb-1 text-slate-500">Datacenters to sell</div>
+                          <input
+                            type="number"
+                            min={1}
+                            max={group.count}
+                            step={1}
+                            value={sellQuantityValue}
+                            onChange={(event) =>
+                              setSellQuantityInputs((current) => ({
+                                ...current,
+                                [group.pods]: event.target.value,
+                              }))
+                            }
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
+                          />
+                        </label>
+
+                        <label className="block text-sm">
+                          <div className="mb-1 text-slate-500">Sale price per datacenter ($)</div>
+                          <input
+                            type="number"
+                            min={0}
+                            step={100000}
+                            value={sellPriceValue}
+                            onChange={(event) =>
+                              setSellPriceInputs((current) => ({
+                                ...current,
+                                [group.pods]: event.target.value,
+                              }))
+                            }
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
+                          />
+                        </label>
+
+                        <div className="flex items-end">
+                          <Button
+                            onClick={() => commitSell(group.pods, group.count, averageBuildCost)}
+                            variant="ghost"
+                          >
+                            Sell Datacenters
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </Panel>
 
