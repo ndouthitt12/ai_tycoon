@@ -6,7 +6,7 @@ export type Tone = "default" | "good" | "warning" | "bad";
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.08),_transparent_32%),linear-gradient(180deg,_#0f172a_0%,_#020617_52%,_#020617_100%)] text-slate-100">
+    <div className="min-h-screen bg-[#0d1117] text-[#e6edf3]">
       {children}
     </div>
   );
@@ -26,17 +26,17 @@ export function Button({
   className?: string;
 }) {
   const variants = {
-    primary: "bg-cyan-400 text-slate-950 hover:bg-cyan-300",
-    secondary: "bg-slate-800 text-slate-100 hover:bg-slate-700",
-    good: "bg-emerald-400 text-slate-950 hover:bg-emerald-300",
-    ghost: "bg-transparent text-slate-300 ring-1 ring-inset ring-slate-700 hover:bg-slate-900",
+    primary: "bg-[#1f6feb] text-white hover:bg-[#388bfd] border border-[#1f6feb]/80",
+    secondary: "bg-[#21262d] text-[#c9d1d9] hover:bg-[#30363d] border border-[#30363d]",
+    good: "bg-[#1a6b29] text-[#3fb950] hover:bg-[#1f7d31] border border-[#2ea043]/40",
+    ghost: "bg-transparent text-[#8b949e] border border-[#30363d] hover:bg-[#161b22] hover:text-[#c9d1d9]",
   };
 
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-xl px-4 py-2 text-sm font-medium transition ${variants[variant]} ${disabled ? "cursor-not-allowed opacity-40" : ""} ${className}`}
+      className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${variants[variant]} ${disabled ? "cursor-not-allowed opacity-40" : ""} ${className}`}
     >
       {children}
     </button>
@@ -45,13 +45,17 @@ export function Button({
 
 export function Badge({ children, tone = "default" }: { children: ReactNode; tone?: Tone }) {
   const styles = {
-    default: "border-slate-700 bg-slate-900/80 text-slate-200",
-    good: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-    warning: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-    bad: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+    default: "bg-[#21262d] text-[#8b949e] border-[#30363d]",
+    good: "bg-[#0d2619] text-[#3fb950] border-[#2ea043]/30",
+    warning: "bg-[#1f1a0d] text-[#d29922] border-[#d29922]/30",
+    bad: "bg-[#220d0d] text-[#f85149] border-[#f85149]/30",
   };
 
-  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs ${styles[tone]}`}>{children}</span>;
+  return (
+    <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium leading-4 ${styles[tone]}`}>
+      {children}
+    </span>
+  );
 }
 
 export function NavTab({
@@ -66,8 +70,10 @@ export function NavTab({
   return (
     <button
       onClick={onClick}
-      className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-        active ? "bg-slate-100 text-slate-950" : "bg-slate-900/70 text-slate-300 hover:bg-slate-800"
+      className={`border-b-2 px-4 py-2.5 text-sm font-medium transition-colors whitespace-nowrap ${
+        active
+          ? "border-[#58a6ff] text-[#e6edf3]"
+          : "border-transparent text-[#8b949e] hover:border-[#30363d] hover:text-[#c9d1d9]"
       }`}
     >
       {children}
@@ -85,17 +91,17 @@ export function SegmentedControl<T extends string>({
   onChange: (key: T) => void;
 }) {
   return (
-    <div className="inline-flex flex-wrap gap-2 rounded-2xl bg-slate-950/60 p-1 ring-1 ring-inset ring-slate-800/70">
+    <div className="inline-flex rounded border border-[#30363d] bg-[#0d1117] p-0.5">
       {options.map((option) => {
         const active = option.key === activeKey;
         return (
           <button
             key={option.key}
             onClick={() => onChange(option.key)}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+            className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
               active
-                ? "bg-slate-100 text-slate-950 shadow-[0_10px_20px_rgba(15,23,42,0.2)]"
-                : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+                ? "bg-[#21262d] text-[#e6edf3] shadow-sm"
+                : "text-[#8b949e] hover:text-[#c9d1d9]"
             }`}
           >
             {option.label}
@@ -120,15 +126,16 @@ export function Panel({
   className?: string;
 }) {
   return (
-    <section className={`rounded-2xl border border-slate-800/80 bg-slate-900/55 p-5 shadow-[0_18px_45px_rgba(2,6,23,0.35)] ${className}`}>
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <div className="text-base font-semibold text-slate-100">{title}</div>
-          {subtitle ? <div className="mt-1 text-sm text-slate-400">{subtitle}</div> : null}
+    <section className={`overflow-hidden rounded-md border border-[#30363d] ${className}`}>
+      <div className="flex items-center justify-between gap-4 border-b border-[#30363d] bg-[#161b22] px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6e7681]">{title}</span>
+          {subtitle ? <span className="text-[#484f58]">/</span> : null}
+          {subtitle ? <span className="truncate text-xs text-[#8b949e]">{subtitle}</span> : null}
         </div>
-        {right}
+        {right ? <div className="shrink-0">{right}</div> : null}
       </div>
-      {children}
+      <div className="bg-[#0d1117] p-4">{children}</div>
     </section>
   );
 }
@@ -145,28 +152,16 @@ export function MiniSparkline({
   const safePoints = points.length ? points : [0, 0];
   const path = linePathFromPoints(safePoints, 120, 40);
   const styles = {
-    default: {
-      stroke: "#cbd5e1",
-      fill: "rgba(148, 163, 184, 0.14)",
-    },
-    good: {
-      stroke: "#34d399",
-      fill: "rgba(52, 211, 153, 0.14)",
-    },
-    warning: {
-      stroke: "#fbbf24",
-      fill: "rgba(251, 191, 36, 0.14)",
-    },
-    bad: {
-      stroke: "#fb7185",
-      fill: "rgba(251, 113, 133, 0.14)",
-    },
+    default: { stroke: "#8b949e", fill: "rgba(139,148,158,0.12)" },
+    good: { stroke: "#3fb950", fill: "rgba(63,185,80,0.12)" },
+    warning: { stroke: "#d29922", fill: "rgba(210,153,34,0.12)" },
+    bad: { stroke: "#f85149", fill: "rgba(248,81,73,0.12)" },
   };
 
   return (
     <svg viewBox="0 0 120 40" className={`h-10 w-28 overflow-visible ${className}`}>
       <path d={`${path} L120,40 L0,40 Z`} fill={styles[tone].fill} />
-      <path d={path} fill="none" stroke={styles[tone].stroke} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={path} fill="none" stroke={styles[tone].stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -182,18 +177,25 @@ export function KpiCard({
   subvalue?: ReactNode;
   tone?: Tone;
 }) {
-  const tones = {
-    default: "border-slate-800 bg-slate-900/65",
-    good: "border-emerald-500/20 bg-emerald-500/10",
-    warning: "border-amber-500/20 bg-amber-500/10",
-    bad: "border-rose-500/20 bg-rose-500/10",
+  const bgTones = {
+    default: "bg-[#0d1117]",
+    good: "bg-[#091d10]",
+    warning: "bg-[#191100]",
+    bad: "bg-[#190a0a]",
+  };
+
+  const valueTones = {
+    default: "text-[#e6edf3]",
+    good: "text-[#3fb950]",
+    warning: "text-[#d29922]",
+    bad: "text-[#f85149]",
   };
 
   return (
-    <div className={`rounded-2xl border p-4 ${tones[tone]}`}>
-      <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{label}</div>
-      <div className="mt-2 font-mono text-2xl font-semibold tracking-tight text-slate-50">{value}</div>
-      {subvalue ? <div className="mt-1 text-sm text-slate-400">{subvalue}</div> : null}
+    <div className={`border-r border-[#21262d] px-4 py-3 last:border-r-0 ${bgTones[tone]}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#484f58]">{label}</div>
+      <div className={`mt-1.5 font-mono text-lg font-semibold leading-none ${valueTones[tone]}`}>{value}</div>
+      {subvalue ? <div className="mt-1 text-[11px] text-[#484f58]">{subvalue}</div> : null}
     </div>
   );
 }
@@ -208,16 +210,16 @@ export function StatRow({
   tone?: Tone;
 }) {
   const textTone = {
-    default: "text-slate-100",
-    good: "text-emerald-300",
-    warning: "text-amber-300",
-    bad: "text-rose-300",
+    default: "text-[#e6edf3]",
+    good: "text-[#3fb950]",
+    warning: "text-[#d29922]",
+    bad: "text-[#f85149]",
   };
 
   return (
-    <div className="flex items-center justify-between gap-3 text-sm">
-      <span className="text-slate-400">{label}</span>
-      <span className={`font-mono ${textTone[tone]}`}>{value}</span>
+    <div className="flex items-center justify-between border-b border-[#161b22] py-2 text-sm last:border-0">
+      <span className="text-[#8b949e]">{label}</span>
+      <span className={`font-mono text-[13px] ${textTone[tone]}`}>{value}</span>
     </div>
   );
 }
@@ -232,21 +234,21 @@ export function Meter({
   tone?: Tone;
 }) {
   const barTone = {
-    default: "bg-slate-300",
-    good: "bg-emerald-400",
-    warning: "bg-amber-400",
-    bad: "bg-rose-400",
+    default: "bg-[#8b949e]",
+    good: "bg-[#3fb950]",
+    warning: "bg-[#d29922]",
+    bad: "bg-[#f85149]",
   };
 
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between text-sm">
-        <span className="text-slate-400">{label}</span>
-        <span className="font-mono text-slate-100">{value.toFixed(1)}</span>
+    <div className="py-1">
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className="text-[#8b949e]">{label}</span>
+        <span className="font-mono text-[#e6edf3]">{value.toFixed(1)}</span>
       </div>
-      <div className="h-2 rounded-full bg-slate-800">
+      <div className="h-1 overflow-hidden rounded-full bg-[#21262d]">
         <div
-          className={`h-2 rounded-full ${barTone[tone]}`}
+          className={`h-1 rounded-full transition-all ${barTone[tone]}`}
           style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
         />
       </div>
@@ -262,9 +264,9 @@ export function EmptyState({
   body: string;
 }) {
   return (
-    <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-6">
-      <div className="text-sm font-medium text-slate-200">{title}</div>
-      <div className="mt-1 text-sm text-slate-400">{body}</div>
+    <div className="rounded border border-dashed border-[#30363d] bg-[#161b22]/40 px-4 py-6 text-center">
+      <div className="text-sm font-medium text-[#c9d1d9]">{title}</div>
+      <div className="mt-1 text-sm text-[#8b949e]">{body}</div>
     </div>
   );
 }
@@ -274,20 +276,20 @@ export function LossCurve({ points }: { points: number[] }) {
   const path = linePathFromPoints(safePoints);
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-[0.22em] text-slate-500">
-        <span>Loss Curve</span>
-        <span className="font-mono text-slate-200">{safePoints[safePoints.length - 1]?.toFixed(2)}</span>
+    <div className="rounded-md border border-[#30363d] bg-[#161b22] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6e7681]">Loss Curve</span>
+        <span className="font-mono text-xs text-[#e6edf3]">{safePoints[safePoints.length - 1]?.toFixed(2)}</span>
       </div>
       <svg viewBox="0 0 320 96" className="h-28 w-full overflow-visible">
         <defs>
           <linearGradient id="curveFade" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#22c55e" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#22c55e" stopOpacity="0" />
+            <stop offset="0%" stopColor="#3fb950" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="#3fb950" stopOpacity="0" />
           </linearGradient>
         </defs>
         <path d={`${path} L320,96 L0,96 Z`} fill="url(#curveFade)" />
-        <path d={path} fill="none" stroke="#4ade80" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path} fill="none" stroke="#3fb950" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </div>
   );

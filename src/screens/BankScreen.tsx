@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { money, pct, getLoanTerms } from "../game/sim";
+import { WEEKS_PER_MONTH, money, pct, getLoanTerms } from "../game/sim";
 import { GameState } from "../game/types";
 import { Badge, Button, EmptyState, Panel, StatRow } from "../components/ui";
 
@@ -21,12 +21,12 @@ export function BankScreen({
     <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
       <div className="space-y-6">
         {game.deficitMonths > 0 ? (
-          <Panel title="Liquidity Crisis" subtitle="Consecutive Deficit Warning">
+          <Panel title="Liquidity Crisis" subtitle="Deficit status is checked at month-end.">
             <div className="rounded-2xl border border-rose-900/50 bg-rose-950/30 p-5 ring-1 ring-inset ring-rose-500/20">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <div className="text-xl font-bold tracking-tight text-rose-500">
-                    Deficit Month {game.deficitMonths} / 12
+                    Deficit Month-End {game.deficitMonths} / 12
                   </div>
                   <div className="mt-1 text-sm leading-6 text-rose-300">
                     Your company is operating at a negative cash balance. If you cannot secure positive liquidity
@@ -90,7 +90,7 @@ export function BankScreen({
                   value={pct(loanPreview.feePct)}
                   tone={loanPreview.feePct === 0 ? "good" : loanPreview.feePct >= 0.2 ? "bad" : "warning"}
                 />
-                <StatRow label="Monthly Payment" value={money(loanPreview.monthlyPayment)} />
+                <StatRow label="Weekly Payment" value={money(loanPreview.weeklyPayment)} />
                 <StatRow label="Total Repayment" value={money(loanPreview.totalRepayment)} />
               </div>
             </div>
@@ -118,7 +118,7 @@ export function BankScreen({
       <div className="space-y-6">
         <Panel
           title="Active Liabilities"
-          subtitle="Your outstanding loans. Monthly payments are deducted automatically from your net profit line."
+          subtitle="Your outstanding loans. Weekly payments are deducted automatically from cash."
         >
           {game.loans.length === 0 ? (
             <EmptyState
@@ -128,7 +128,11 @@ export function BankScreen({
           ) : (
             <div className="space-y-4">
               {game.loans.map((loan) => {
-                const totalProgress = (loan.elapsed / loan.term) * 100;
+                const termWeeks = loan.termWeeks ?? loan.term * WEEKS_PER_MONTH;
+                const elapsedWeeks = loan.elapsedWeeks ?? loan.elapsed * WEEKS_PER_MONTH;
+                const remainingWeeks = Math.max(0, termWeeks - elapsedWeeks);
+                const weeklyPayment = loan.weeklyPayment ?? loan.monthlyPayment / WEEKS_PER_MONTH;
+                const totalProgress = (elapsedWeeks / Math.max(1, termWeeks)) * 100;
 
                 return (
                   <div key={loan.id} className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
@@ -138,19 +142,19 @@ export function BankScreen({
                           {money(loan.principal)} Principal over {loan.term} mo
                         </div>
                         <div className="mt-1 text-sm text-slate-400">
-                          {loan.elapsed} months paid / {loan.term - loan.elapsed} remaining
+                          {elapsedWeeks} weeks paid / {remainingWeeks} remaining
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge tone="default">Fee {pct(loan.interestFeePct)}</Badge>
-                        <Badge tone="warning">Burn {money(loan.monthlyPayment)}/mo</Badge>
+                        <Badge tone="warning">Burn {money(weeklyPayment)}/wk</Badge>
                       </div>
                     </div>
 
                     <div className="mt-4 space-y-1.5">
                       <div className="flex items-center justify-between text-xs text-slate-500">
                         <span>Repayment Progress</span>
-                        <span>{pct(loan.elapsed / loan.term)}</span>
+                        <span>{pct(elapsedWeeks / Math.max(1, termWeeks))}</span>
                       </div>
                       <div className="h-2 w-full overflow-hidden rounded-full bg-slate-900 border border-slate-800">
                         <div

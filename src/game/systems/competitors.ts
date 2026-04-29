@@ -15,7 +15,15 @@ import {
   ReliabilityTierId,
   TrainingConfig,
 } from "../types";
+import { WEEKS_PER_MONTH, getMonthIndexFromWeek, isMonthEndWeek } from "../time";
 import {
+  COMPETITOR_PRICE_CUT_AGGRESSION,
+  COMPETITOR_PRICE_CUT_BALANCED,
+  COMPETITOR_PRICE_CUT_DISCIPLINED,
+  COMPETITOR_PRICE_FLOOR_MULTIPLIER,
+  COMPETITOR_PRICE_RESPONSE_THRESHOLD,
+  COMPETITOR_PRICE_RESTORE_RATE,
+  COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS,
   COMPETITOR_RELEASE_SHOCK_COEFFICIENT,
   TRAINING_CONTEXT_EXPANSION_CAPABILITY,
   TRAINING_DATA_CAPABILITY,
@@ -144,6 +152,66 @@ function getCompetitorCapabilityMultiplier(admin: Pick<GameState["competitorAdmi
   return admin.capabilityModifier > 0 ? admin.capabilityModifier : 1;
 }
 
+function getCompetitorPriceCutMultiplier(behavior: GameState["competitorAdmin"][string]["behavior"]) {
+  if (behavior === "aggressive") return COMPETITOR_PRICE_CUT_AGGRESSION;
+  if (behavior === "disciplined") return COMPETITOR_PRICE_CUT_DISCIPLINED;
+  return COMPETITOR_PRICE_CUT_BALANCED;
+}
+
+function normalizePriceHistory(price: number | null, history?: number[]) {
+  if (price === null) return [];
+  const cleanHistory = Array.isArray(history)
+    ? history.filter((value) => typeof value === "number" && Number.isFinite(value))
+    : [];
+  return (cleanHistory.length ? cleanHistory : [price]).slice(-4);
+}
+
+function getLaunchPrice(currentPrice: number | null, launchPrice: number | null | undefined, history?: number[]) {
+  if (currentPrice === null) return null;
+  return typeof launchPrice === "number" && Number.isFinite(launchPrice)
+    ? launchPrice
+    : normalizePriceHistory(currentPrice, history)[0] ?? currentPrice;
+}
+
+function normalizeCompetitorPricingState(
+  competitor: GameState["competitorCompanies"][string],
+  currentWeek = 1,
+) {
+  competitor.lastPriceReviewWeek = Math.max(
+    0,
+    Math.floor(
+      typeof competitor.lastPriceReviewWeek === "number" && Number.isFinite(competitor.lastPriceReviewWeek)
+        ? competitor.lastPriceReviewWeek
+        : 0,
+    ),
+  );
+  competitor.pricingCooldownWeeks = Math.max(
+    0,
+    Math.floor(competitor.lastPriceReviewWeek + COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS - currentWeek),
+  );
+  competitor.models.forEach((model) => {
+    model.chatPriceHistory = normalizePriceHistory(model.chatPrice, model.chatPriceHistory);
+    model.apiPriceHistory = normalizePriceHistory(model.apiPrice, model.apiPriceHistory);
+    model.launchChatPrice = getLaunchPrice(model.chatPrice, model.launchChatPrice, model.chatPriceHistory);
+    model.launchApiPrice = getLaunchPrice(model.apiPrice, model.launchApiPrice, model.apiPriceHistory);
+  });
+}
+
+function getPlayerReferencePrice(game: GameState, productType: "chatbot" | "api") {
+  const product = game.products[productType];
+  if (productType === "chatbot" && product.subscriptionPlans?.length) {
+    const paidPlanPrices = product.subscriptionPlans
+      .map((plan) => plan.price)
+      .filter((price) => price > 0)
+      .sort((left, right) => left - right);
+    if (paidPlanPrices.length) return paidPlanPrices[0];
+    return Math.min(...product.subscriptionPlans.map((plan) => plan.price));
+  }
+  if (!product.modelIds.length) return product.price;
+  const prices = product.modelIds.map((modelId) => product.modelPrices[String(modelId)] ?? product.price);
+  return prices.reduce((sum, price) => sum + price, 0) / prices.length;
+}
+
 function getCompetitorDevelopmentWindow(
   behavior: GameState["competitorAdmin"][string]["behavior"],
   releaseKind: "new" | "upgrade" | "branch",
@@ -174,6 +242,32 @@ function getCompetitorDevelopmentMonths(
   if (spread <= 0) return min;
   const offset = (companyIndex * 5 + releaseIndex * 7 + (releaseKind === "branch" ? 3 : releaseKind === "upgrade" ? 1 : 0)) % (spread + 1);
   return min + offset;
+}
+
+function getCompatibleWeek(game: GameState) {
+  const week = (game as Partial<GameState>).week;
+  return typeof week === "number" && Number.isFinite(week)
+    ? Math.max(1, Math.floor(week))
+    : Math.max(1, Math.floor((game.turn - 1) * WEEKS_PER_MONTH + 1));
+}
+
+function getMonthEquivalentFromWeek(week: number) {
+  return (Math.max(1, week) - 1) / WEEKS_PER_MONTH + 1;
+}
+
+function getReleaseWeekFromLegacyMonth(month: number) {
+  return Math.max(1, Math.floor((month - 1) * WEEKS_PER_MONTH + 1));
+}
+
+function getCompetitorNextReleaseWeek(competitor: GameState["competitorCompanies"][string]) {
+  if (typeof competitor.nextReleaseWeek === "number" && Number.isFinite(competitor.nextReleaseWeek)) {
+    return Math.max(1, Math.floor(competitor.nextReleaseWeek));
+  }
+  return getReleaseWeekFromLegacyMonth(competitor.nextReleaseMonth ?? 1);
+}
+
+function scheduleCompetitorReleaseWeek(currentWeek: number, developmentMonths: number) {
+  return Math.max(1, Math.floor(currentWeek + developmentMonths * WEEKS_PER_MONTH));
 }
 
 function getCompetitorReleaseKind(releaseIndex: number): "new" | "upgrade" | "branch" {
@@ -254,7 +348,7 @@ function buildCompetitorRelease(
   companyIndex: number,
   competitor: GameState["competitorCompanies"][string],
   admin: GameState["competitorAdmin"][string],
-  monthBuilt: number,
+  weekBuilt: number,
 ) {
   const behavior = getCompetitorBehaviorProfile(admin.behavior);
   const strategyGoals = getCompetitorGoals(company.goals, admin.strategy);
@@ -389,21 +483,31 @@ function buildCompetitorRelease(
   const chatPrice = hasChat ? Math.max(10, Math.round(18 * priceMultiplier + capability * 0.005)) : null;
   const apiPrice = hasAPI ? Number(Math.max(0.5, 1.5 * priceMultiplier + parameterScale * 0.001).toFixed(2)) : null;
 
+  const releaseMonth = getMonthIndexFromWeek(weekBuilt);
+  const versionMonth = getMonthEquivalentFromWeek(weekBuilt);
+
   return {
     model: {
       name: currentFamilyName,
-      version: roundVersion(company.versionBase + monthBuilt / 12 + behavior.versionPaceBonus + competitor.releaseIndex * 0.04),
+      version: roundVersion(company.versionBase + versionMonth / 12 + behavior.versionPaceBonus + competitor.releaseIndex * 0.04),
       developmentCost: totalCost,
       capability,
       memorySize,
       parameterScale,
       contextWindow,
       goals: { ...displayGoals },
-      monthBuilt,
-      releaseMonth: monthBuilt,
+      weekBuilt,
+      monthBuilt: releaseMonth,
+      releaseWeek: weekBuilt,
+      releaseMonth,
       chatPrice,
       apiPrice,
+      launchChatPrice: chatPrice,
+      launchApiPrice: apiPrice,
+      chatPriceHistory: chatPrice === null ? [] : [chatPrice],
+      apiPriceHistory: apiPrice === null ? [] : [apiPrice],
       subscribersByCohort: createEmptyCohortSubscriberMap(),
+      cohortTenureWeeks: createEmptyCohortSubscriberMap(),
       reliability: Object.fromEntries(
         RELIABILITY_TIER_IDS.map((tier) => [tier, Math.min(0.9, competitor.releaseIndex * 0.15 + (admin.strategy === "balanced" ? 0.3 : 0.5))]),
       ) as Record<ReliabilityTierId, number>,
@@ -425,7 +529,10 @@ export function createInitialCompetitorCompanyState(
     revenueHistory: [],
     profitHistory: [],
     models: [],
+    pricingCooldownWeeks: COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS,
+    lastPriceReviewWeek: 0,
     releaseIndex: 0,
+    nextReleaseWeek: 1,
     nextReleaseMonth: 1,
     currentFamilyName: `${company.name.split(" ")[0]} ${COMPETITOR_RELEASE_FAMILIES[companyIndex % COMPETITOR_RELEASE_FAMILIES.length]}`,
   };
@@ -433,12 +540,17 @@ export function createInitialCompetitorCompanyState(
   if (!initialRelease) return baseState;
 
   const nextReleaseIndex = 1;
+  const nextReleaseWeek = scheduleCompetitorReleaseWeek(
+    1,
+    getCompetitorDevelopmentMonths(admin.behavior, getCompetitorReleaseKind(nextReleaseIndex), companyIndex, nextReleaseIndex),
+  );
   return {
     ...baseState,
     cash: baseState.cash - initialRelease.totalCost,
     models: [initialRelease.model],
     releaseIndex: nextReleaseIndex,
-    nextReleaseMonth: 1 + getCompetitorDevelopmentMonths(admin.behavior, getCompetitorReleaseKind(nextReleaseIndex), companyIndex, nextReleaseIndex),
+    nextReleaseWeek,
+    nextReleaseMonth: getMonthIndexFromWeek(nextReleaseWeek),
     currentFamilyName: initialRelease.currentFamilyName,
   };
 }
@@ -449,7 +561,10 @@ export function getCompetitorCompanyState(
   companyIndex?: number,
 ) {
   const existing = game.competitorCompanies[competitorId];
-  if (existing) return existing;
+  if (existing) {
+    normalizeCompetitorPricingState(existing, getCompatibleWeek(game));
+    return existing;
+  }
   const company =
     getCompetitorCompanyDefinition(competitorId) ??
     COMPETITOR_COMPANIES[Math.max(0, companyIndex ?? 0)];
@@ -457,10 +572,79 @@ export function getCompetitorCompanyState(
   return createInitialCompetitorCompanyState(game.goalEconomics, company, Math.max(0, index));
 }
 
+function updateCompetitorPricing(
+  game: GameState,
+  company: CompetitorCompanyDefinition,
+  competitor: GameState["competitorCompanies"][string],
+  admin: GameState["competitorAdmin"][string],
+  currentWeek: number,
+  notify: (game: GameState, text: string, tone?: NotificationTone) => void,
+) {
+  normalizeCompetitorPricingState(competitor, currentWeek);
+
+  const nextReviewWeek = competitor.lastPriceReviewWeek + COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS;
+  if (currentWeek < nextReviewWeek) {
+    competitor.pricingCooldownWeeks = Math.max(0, nextReviewWeek - currentWeek);
+    return;
+  }
+
+  const cutMultiplier = getCompetitorPriceCutMultiplier(admin.behavior);
+  const playerChatPrice = getPlayerReferencePrice(game, "chatbot");
+  const playerApiPrice = getPlayerReferencePrice(game, "api");
+
+  competitor.models.forEach((model) => {
+    if (model.chatPrice !== null) {
+      const previousChatPrice = model.chatPrice;
+      const launchChatPrice = model.launchChatPrice ?? model.chatPriceHistory[0] ?? model.chatPrice;
+      const floor = launchChatPrice * COMPETITOR_PRICE_FLOOR_MULTIPLIER;
+      const gap = (playerChatPrice - model.chatPrice) / Math.max(1, model.chatPrice);
+
+      if (gap < -COMPETITOR_PRICE_RESPONSE_THRESHOLD) {
+        model.chatPrice = Math.max(floor, Math.round(playerChatPrice * cutMultiplier));
+      } else if (gap > 0.1 && model.chatPrice < launchChatPrice) {
+        model.chatPrice = Math.min(
+          launchChatPrice,
+          Math.round(model.chatPrice * (1 + COMPETITOR_PRICE_RESTORE_RATE)),
+        );
+      }
+
+      model.chatPriceHistory = [...model.chatPriceHistory.slice(-3), model.chatPrice];
+      if (previousChatPrice - model.chatPrice > previousChatPrice * 0.25) {
+        notify(game, `${company.name} aggressively cut chat prices to $${model.chatPrice}/mo.`, "warning");
+      }
+    }
+
+    if (model.apiPrice !== null) {
+      const launchApiPrice = model.launchApiPrice ?? model.apiPriceHistory[0] ?? model.apiPrice;
+      const floor = launchApiPrice * COMPETITOR_PRICE_FLOOR_MULTIPLIER;
+      const gap = (playerApiPrice - model.apiPrice) / Math.max(0.01, model.apiPrice);
+
+      if (gap < -COMPETITOR_PRICE_RESPONSE_THRESHOLD) {
+        model.apiPrice = Math.max(
+          floor,
+          Number((playerApiPrice * cutMultiplier).toFixed(2)),
+        );
+      } else if (gap > 0.1 && model.apiPrice < launchApiPrice) {
+        model.apiPrice = Math.min(
+          launchApiPrice,
+          Number((model.apiPrice * (1 + COMPETITOR_PRICE_RESTORE_RATE)).toFixed(2)),
+        );
+      }
+
+      model.apiPriceHistory = [...model.apiPriceHistory.slice(-3), model.apiPrice];
+    }
+  });
+
+  competitor.lastPriceReviewWeek = currentWeek;
+  competitor.pricingCooldownWeeks = COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS;
+}
+
 export function updateCompetitorCompanies(
   game: GameState,
   notify: (game: GameState, text: string, tone?: NotificationTone) => void,
 ) {
+  const currentWeek = getCompatibleWeek(game);
+  const shouldSettleFinancials = isMonthEndWeek(currentWeek);
   const playerTopCapability = getBestCapability(game);
   const playerRevenuePenetration = clamp(
     (game.products.chatbot.activeUsers / 50000) * 0.4 +
@@ -491,20 +675,29 @@ export function updateCompetitorCompanies(
     const monthlyProfit = Math.round(monthlyRevenue * monthlyMargin);
     const monthlyOperatingCost = monthlyRevenue - monthlyProfit;
 
-    competitor.cash = Math.round(competitor.cash + monthlyRevenue - monthlyOperatingCost);
-    competitor.revenueHistory.push(monthlyRevenue);
-    competitor.revenueHistory = competitor.revenueHistory.slice(-12);
-    competitor.profitHistory.push(monthlyProfit);
-    competitor.profitHistory = competitor.profitHistory.slice(-12);
+    if (shouldSettleFinancials) {
+      competitor.cash = Math.round(competitor.cash + monthlyRevenue - monthlyOperatingCost);
+      competitor.revenueHistory.push(monthlyRevenue);
+      competitor.revenueHistory = competitor.revenueHistory.slice(-12);
+      competitor.profitHistory.push(monthlyProfit);
+      competitor.profitHistory = competitor.profitHistory.slice(-12);
+      updateCompetitorPricing(game, company, competitor, admin, currentWeek, notify);
+    }
 
-    if (game.turn < competitor.nextReleaseMonth) {
+    const nextReleaseWeek = getCompetitorNextReleaseWeek(competitor);
+    competitor.nextReleaseWeek = nextReleaseWeek;
+    competitor.nextReleaseMonth = getMonthIndexFromWeek(nextReleaseWeek);
+
+    if (currentWeek < nextReleaseWeek) {
       game.competitorCompanies[company.id] = competitor;
       return;
     }
 
-    const release = buildCompetitorRelease(game.goalEconomics, company, index, competitor, admin, game.turn);
+    const release = buildCompetitorRelease(game.goalEconomics, company, index, competitor, admin, currentWeek);
     if (!release) {
-      competitor.nextReleaseMonth = game.turn + 1;
+      const retryWeek = currentWeek + WEEKS_PER_MONTH;
+      competitor.nextReleaseWeek = retryWeek;
+      competitor.nextReleaseMonth = getMonthIndexFromWeek(retryWeek);
       game.competitorCompanies[company.id] = competitor;
       return;
     }
@@ -519,9 +712,11 @@ export function updateCompetitorCompanies(
     }
     competitor.releaseIndex += 1;
     competitor.currentFamilyName = release.currentFamilyName;
-    competitor.nextReleaseMonth =
-      game.turn +
-      getCompetitorDevelopmentMonths(admin.behavior, getCompetitorReleaseKind(competitor.releaseIndex), index, competitor.releaseIndex);
+    competitor.nextReleaseWeek = scheduleCompetitorReleaseWeek(
+      currentWeek,
+      getCompetitorDevelopmentMonths(admin.behavior, getCompetitorReleaseKind(competitor.releaseIndex), index, competitor.releaseIndex),
+    );
+    competitor.nextReleaseMonth = getMonthIndexFromWeek(competitor.nextReleaseWeek);
     game.competitorCompanies[company.id] = competitor;
   });
 }

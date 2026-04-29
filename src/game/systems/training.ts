@@ -43,6 +43,7 @@ import {
   TRAINING_WEB_DATA_FAILURE_RISK,
 } from "./balance";
 import { copyGame } from "./state";
+import { WEEKS_PER_MONTH } from "../time";
 
 const BASE_MEMORY_SIZE = {
   small: 8,
@@ -108,8 +109,55 @@ function getEngineerTrainingMultiplier(level: number) {
   return 1 + level * 0.1;
 }
 
-function getEngineerFailureRiskReduction(game: Pick<GameState, "headcount" | "upgrades" | "engineerTrainingLevel">) {
-  return game.headcount.engineers * 0.015 * getEngineerTrainingMultiplier(game.engineerTrainingLevel) + game.upgrades.training * 0.03;
+function getEngineerFailureRiskReduction(game: Pick<GameState, "headcount" | "upgrades" | "engineerTrainingLevel" | "departments">) {
+  const departmentBonus = game.departments.engineering.managementQuality * 0.0008;
+  return game.headcount.engineers * 0.015 * getEngineerTrainingMultiplier(game.engineerTrainingLevel) + game.upgrades.training * 0.03 + departmentBonus;
+}
+
+function getAssignedResearchers(game: GameState) {
+  return game.trainingConfig.assignedResearcherIds
+    .map((employeeId) => game.employees.find((employee) => employee.id === employeeId))
+    .filter((employee): employee is NonNullable<GameState["employees"][number]> => Boolean(employee && employee.active && employee.departmentId === "research"));
+}
+
+function getResearchDepartmentBonus(game: GameState) {
+  const department = game.departments.research;
+  return department.managementQuality * 0.08 + department.morale * 0.06 - 6;
+}
+
+function getAssignedResearcherContribution(game: GameState) {
+  return getAssignedResearchers(game).reduce((sum, researcher) => {
+    const specialtyBonus =
+      researcher.specialty === "reasoning"
+        ? 8
+        : researcher.specialty === "multimodal"
+          ? 6
+          : researcher.specialty === "agentic"
+            ? 5
+            : researcher.specialty === "safety"
+              ? 4
+              : researcher.specialty === "data"
+                ? 4
+                : 3;
+    return sum + researcher.skill * 0.18 + specialtyBonus;
+  }, 0);
+}
+
+function getAssignedResearcherRiskAdjustment(game: GameState) {
+  return getAssignedResearchers(game).reduce((sum, researcher) => {
+    const burnoutPenalty = researcher.burnout > 65 ? 0.014 : researcher.burnout > 45 ? 0.006 : 0;
+    const leadershipShield = researcher.level === "director" || researcher.level === "executive" ? 0.004 : 0;
+    return sum + burnoutPenalty - leadershipShield;
+  }, 0);
+}
+
+function getKeyPersonRisk(game: GameState) {
+  const assignedResearchers = getAssignedResearchers(game);
+  if (!assignedResearchers.length) return 0;
+
+  const totalPoach = assignedResearchers.reduce((sum, researcher) => sum + researcher.poachRisk, 0) / assignedResearchers.length;
+  const totalBurnout = assignedResearchers.reduce((sum, researcher) => sum + researcher.burnout, 0) / assignedResearchers.length;
+  return clamp((totalPoach * 0.003 + totalBurnout * 0.0025) / Math.max(1, Math.sqrt(assignedResearchers.length)), 0.02, 0.35);
 }
 
 function getModelById(game: GameState, id: number | null) {
@@ -146,14 +194,14 @@ export function getGoalCapabilityLift(goals: TrainingConfig["goals"]) {
   return goalComplexity * 2.8 + activeGoals * 0.45 + extraIntensity * 0.085;
 }
 
-function generateLossCurve(totalMonths: number, severity = 0) {
+function generateLossCurve(totalWeeks: number, severity = 0) {
   const points: number[] = [];
   let current = rand(2.4, 3.2);
-  for (let index = 0; index < totalMonths; index += 1) {
-    const trend = 0.18 + index * 0.02;
+  for (let index = 0; index < totalWeeks; index += 1) {
+    const trend = (0.18 + (index / WEEKS_PER_MONTH) * 0.02) / WEEKS_PER_MONTH;
     current -= trend * rand(0.7, 1.15);
     current += rand(-0.08, 0.12);
-    if (severity > 0 && index === Math.max(1, Math.floor(totalMonths / 2))) {
+    if (severity > 0 && index === Math.max(1, Math.floor(totalWeeks / 2))) {
       current += severity;
     }
     points.push(Math.max(0.35, Number(current.toFixed(2))));
@@ -217,6 +265,8 @@ export function getResearchContribution(game: GameState) {
   const effects = getDirectiveEffects(game);
   return Math.round(
     game.headcount.researchers * 2.2 +
+    getResearchDepartmentBonus(game) +
+    getAssignedResearcherContribution(game) +
     game.upgrades.training * 4 +
     archetype.modifiers.trainingCapabilityBonus +
     effects.frontierCapabilityBonus,
@@ -298,6 +348,7 @@ export function calculateRunPreview(game: GameState) {
   );
   const engineerBonus = getEngineerFailureRiskReduction(game);
   const researcherContribution = getResearchContribution(game);
+  const assignedResearchers = getAssignedResearchers(game);
   const dataContribution = trainingDataUnits * data.quality * 1.65;
   const dataRiskAdjustment =
     data.key === "web" ? TRAINING_WEB_DATA_FAILURE_RISK : data.key === "licensed" ? TRAINING_LICENSED_DATA_FAILURE_RISK : TRAINING_SYNTH_DATA_FAILURE_RISK;
@@ -310,6 +361,8 @@ export function calculateRunPreview(game: GameState) {
     contextSteps * TRAINING_CONTEXT_STEP_FAILURE_RISK +
     goalComplexity * TRAINING_GOAL_COMPLEXITY_FAILURE_RISK +
     trainingDataUnits * TRAINING_DATA_UNIT_FAILURE_RISK +
+    getAssignedResearcherRiskAdjustment(game) +
+    getKeyPersonRisk(game) * 0.28 +
     effects.frontierRiskPenalty,
     0.04,
     0.82,
@@ -410,6 +463,8 @@ export function calculateRunPreview(game: GameState) {
     engineerRiskReduction: engineerBonus,
     engineerTrainingMultiplier: getEngineerTrainingMultiplier(game.engineerTrainingLevel),
     dataContribution: Math.round(dataContribution),
+    assignedResearchers,
+    keyPersonRisk: getKeyPersonRisk(game),
   };
 }
 
@@ -430,9 +485,14 @@ export function launchRun(game: GameState) {
   const researcherDiscountPerResearcher = rand(RESEARCHER_DISCOUNT_MIN, RESEARCHER_DISCOUNT_MAX);
   const upfrontDevelopmentCost = Math.round(estimate.projectedEquivalentCost * 0.3);
   const remainingDevelopmentCost = Math.max(0, estimate.projectedEquivalentCost - upfrontDevelopmentCost);
+  const totalWeeks = Math.ceil(estimate.totalMonths * WEEKS_PER_MONTH);
   if (next.cash < upfrontDevelopmentCost) return game;
 
   next.cash -= upfrontDevelopmentCost;
+  const assignedResearcherIds = next.trainingConfig.assignedResearcherIds.filter((employeeId) => {
+    const employee = next.employees.find((entry) => entry.id === employeeId);
+    return Boolean(employee && employee.active && employee.departmentId === "research" && employee.assignedRunId === null);
+  });
   const run: ActiveRun = {
     id: next.nextId++,
     mode: next.trainingConfig.mode,
@@ -444,6 +504,8 @@ export function launchRun(game: GameState) {
     sizeKey: size.key,
     dataTier,
     computeNeed: estimate.computeNeed,
+    totalWeeks,
+    weeksElapsed: 0,
     totalMonths: estimate.totalMonths,
     monthsElapsed: 0,
     projectedCapability: estimate.capability,
@@ -462,18 +524,24 @@ export function launchRun(game: GameState) {
     researcherDiscountPerResearcher,
     lossSeverity: 0,
     eventTriggered: false,
-    lossCurve: generateLossCurve(estimate.totalMonths),
+    lossCurve: generateLossCurve(totalWeeks),
     reliability: { ...next.trainingConfig.reliability },
+    assignedResearcherIds,
+    keyPersonRisk: estimate.keyPersonRisk,
   };
 
   next.activeRuns.push(run);
+  assignedResearcherIds.forEach((employeeId) => {
+    const employee = next.employees.find((entry) => entry.id === employeeId);
+    if (employee) employee.assignedRunId = run.id;
+  });
   addNotification(
     next,
     `Launched ${run.name}: ${size.name} model on ${DATA_TIERS[dataTier].name}. Upfront spend ${money(
       upfrontDevelopmentCost,
     )}, remaining ${money(remainingDevelopmentCost)} over development. Projected risk ${pct(estimate.failureRisk)}. Research discount ${(
       researcherDiscountPerResearcher * 100
-    ).toFixed(2)}% per researcher.`,
+    ).toFixed(2)}% per researcher. Assigned researchers ${assignedResearcherIds.length}.`,
     "info",
   );
   return next;

@@ -13,5 +13,7 @@ export function produceGame(game: GameState, recipe: GameRecipe): GameState {
 }
 
 export function copyGame(game: GameState): GameState {
-  return produce(game, () => {});
+  return typeof structuredClone === "function"
+    ? structuredClone(game)
+    : JSON.parse(JSON.stringify(game));
 }

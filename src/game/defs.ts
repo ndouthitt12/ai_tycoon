@@ -6,6 +6,10 @@ import {
   CohortCategory,
   CohortDef,
   CohortId,
+  DepartmentId,
+  DepartmentState,
+  EmployeeLevelId,
+  EmployeeState,
   CompetitorCompanyDefinition,
   CompetitorBehaviorId,
   CompetitorStrategyId,
@@ -14,6 +18,7 @@ import {
   DatasetPackDefinition,
   DatasetPackSizeId,
   GoalEconomicsRule,
+  HiringCandidateState,
   ModelGoalDefinition,
   ModelGoalId,
   ModelSizeId,
@@ -25,6 +30,7 @@ import {
   RoleId,
   TrainingConfig,
   ReliabilityTierId,
+  ResearchSpecialtyId,
   UpgradeId,
   UpgradeDefinition,
 } from "./types";
@@ -47,6 +53,40 @@ export const ROLE_LABELS: Record<RoleId, string> = {
   researchers: "Researchers",
   engineers: "Engineers",
   sales: "Product / Sales",
+};
+
+export const DEPARTMENT_LABELS: Record<DepartmentId, string> = {
+  research: "Research",
+  engineering: "Engineering",
+  go_to_market: "Go-To-Market",
+};
+
+export const DEPARTMENT_ROLE_MAP: Record<DepartmentId, RoleId> = {
+  research: "researchers",
+  engineering: "engineers",
+  go_to_market: "sales",
+};
+
+export const EMPLOYEE_LEVEL_LABELS: Record<EmployeeLevelId, string> = {
+  staff: "Staff",
+  lead: "Lead",
+  director: "Director",
+  executive: "Executive",
+};
+
+export const RESEARCH_SPECIALTY_LABELS: Record<ResearchSpecialtyId, string> = {
+  reasoning: "Reasoning",
+  multimodal: "Multimodal",
+  safety: "Safety",
+  inference: "Inference",
+  agentic: "Agentic",
+  data: "Data",
+};
+
+export const DEPARTMENT_BASE_SALARIES: Record<DepartmentId, Record<EmployeeLevelId, number>> = {
+  research: { staff: 420000, lead: 650000, director: 900000, executive: 1300000 },
+  engineering: { staff: 260000, lead: 420000, director: 620000, executive: 850000 },
+  go_to_market: { staff: 210000, lead: 330000, director: 480000, executive: 700000 },
 };
 
 export const DATA_TIERS: Record<DataTierId, DataTierDefinition> = {
@@ -286,6 +326,7 @@ function parseStartingModelConfigs(csv: string) {
         goals: parseGoalRecord(row, "goal_", 0),
         trainingDataUnits: Number(row.trainingDataUnits),
         reliability: getEmptyReliability(),
+        assignedResearcherIds: [],
       } satisfies TrainingConfig,
     ]),
   ) as Record<ArchetypeId, TrainingConfig>;
@@ -304,6 +345,136 @@ export function createEmptyCohortSubscriberMap() {
   return Object.fromEntries(
     GLOBAL_COHORT_IDS.map((cohortId) => [cohortId, 0]),
   ) as Record<CohortId, number>;
+}
+
+const FIRST_NAMES = ["Maya", "Samir", "Elena", "Theo", "Nina", "Marcus", "Aisha", "Jonah", "Priya", "Leo", "Avery", "Rina"];
+const LAST_NAMES = ["Patel", "Kim", "Nguyen", "Singh", "Alvarez", "Carter", "Ibrahim", "Chen", "Flores", "Davis", "Sato", "Morgan"];
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function seededPick<T>(items: T[], seed: string, offset = 0) {
+  const hash = hashString(`${seed}:${offset}`);
+  return items[hash % items.length];
+}
+
+function getEmployeeSalary(departmentId: DepartmentId, level: EmployeeLevelId, specialty: ResearchSpecialtyId | null, skill: number) {
+  const specialtyPremium = specialty ? 45000 : 0;
+  return Math.round(DEPARTMENT_BASE_SALARIES[departmentId][level] + specialtyPremium + skill * 6500);
+}
+
+export function createDefaultDepartments(): Record<DepartmentId, DepartmentState> {
+  return {
+    research: { id: "research", name: DEPARTMENT_LABELS.research, roleId: "researchers", leadEmployeeId: null, morale: 62, managementQuality: 56 },
+    engineering: { id: "engineering", name: DEPARTMENT_LABELS.engineering, roleId: "engineers", leadEmployeeId: null, morale: 60, managementQuality: 54 },
+    go_to_market: { id: "go_to_market", name: DEPARTMENT_LABELS.go_to_market, roleId: "sales", leadEmployeeId: null, morale: 58, managementQuality: 52 },
+  };
+}
+
+export function createEmployeeProfile(seed: string, departmentId: DepartmentId, level: EmployeeLevelId, specialty: ResearchSpecialtyId | null, title: string): Omit<EmployeeState, "id" | "assignedRunId"> {
+  const name = `${seededPick(FIRST_NAMES, seed)} ${seededPick(LAST_NAMES, seed, 1)}`;
+  const skillBase = level === "executive" ? 78 : level === "director" ? 70 : level === "lead" ? 64 : 56;
+  const leadershipBase = level === "executive" ? 84 : level === "director" ? 72 : level === "lead" ? 58 : 34;
+  const skill = Math.min(95, skillBase + (hashString(`${seed}:skill`) % 15));
+  const leadership = Math.min(95, leadershipBase + (hashString(`${seed}:lead`) % 12));
+  return {
+    name,
+    departmentId,
+    roleId: DEPARTMENT_ROLE_MAP[departmentId],
+    title,
+    level,
+    salary: getEmployeeSalary(departmentId, level, specialty, skill),
+    specialty,
+    skill,
+    leadership,
+    loyalty: 55 + (hashString(`${seed}:loyalty`) % 28),
+    burnout: 8 + (hashString(`${seed}:burnout`) % 16),
+    poachRisk: 10 + (hashString(`${seed}:poach`) % 22),
+    breakthroughChance: specialty ? 10 + (hashString(`${seed}:breakthrough`) % 18) : 0,
+    active: true,
+    status: "active",
+  };
+}
+
+export function createArchetypeEmployees(archetypeId: ArchetypeId): Omit<EmployeeState, "id" | "assignedRunId">[] {
+  const common = [
+    createEmployeeProfile(`${archetypeId}:cto`, "engineering", "executive", "inference", "CTO"),
+    createEmployeeProfile(`${archetypeId}:cro`, "go_to_market", "director", null, "Head of GTM"),
+  ];
+
+  if (archetypeId === "frontier_lab") {
+    return [
+      createEmployeeProfile(`${archetypeId}:chief_scientist`, "research", "executive", "reasoning", "Chief Scientist"),
+      createEmployeeProfile(`${archetypeId}:reasoning_lead`, "research", "lead", "reasoning", "Principal Reasoning Researcher"),
+      createEmployeeProfile(`${archetypeId}:safety_lead`, "research", "lead", "safety", "Alignment Lead"),
+      ...common,
+    ];
+  }
+
+  if (archetypeId === "consumer_ai_product_company") {
+    return [
+      createEmployeeProfile(`${archetypeId}:product_research`, "research", "director", "multimodal", "Head of Applied Research"),
+      createEmployeeProfile(`${archetypeId}:mm_lead`, "research", "lead", "multimodal", "Multimodal Lead"),
+      createEmployeeProfile(`${archetypeId}:agentic_lead`, "research", "lead", "agentic", "Agent Systems Lead"),
+      ...common,
+    ];
+  }
+
+  if (archetypeId === "enterprise_copilot_company") {
+    return [
+      createEmployeeProfile(`${archetypeId}:applied_research`, "research", "director", "safety", "Head of Enterprise Research"),
+      createEmployeeProfile(`${archetypeId}:reasoning`, "research", "lead", "reasoning", "Reasoning Lead"),
+      createEmployeeProfile(`${archetypeId}:data`, "research", "lead", "data", "Knowledge Systems Lead"),
+      ...common,
+    ];
+  }
+
+  return [
+    createEmployeeProfile(`${archetypeId}:applied_research`, "research", "director", "reasoning", "Research Director"),
+    createEmployeeProfile(`${archetypeId}:inference`, "research", "lead", "inference", "Efficiency Research Lead"),
+    createEmployeeProfile(`${archetypeId}:multimodal`, "research", "lead", "multimodal", "Open Model Lead"),
+    ...common,
+  ];
+}
+
+export function createHiringCandidates(seed: string, count = 6): Omit<HiringCandidateState, "id">[] {
+  const departments: DepartmentId[] = ["research", "engineering", "go_to_market"];
+  const researchSpecialties: ResearchSpecialtyId[] = ["reasoning", "multimodal", "safety", "inference", "agentic", "data"];
+
+  return Array.from({ length: count }, (_, index) => {
+    const candidateSeed = `${seed}:${index}`;
+    const departmentId = seededPick(departments, candidateSeed);
+    const level = departmentId === "research" && index % 3 === 0 ? "lead" : index % 5 === 0 ? "director" : "staff";
+    const specialty = departmentId === "research" ? seededPick(researchSpecialties, candidateSeed, 2) : null;
+    const title =
+      departmentId === "research"
+        ? level === "director"
+          ? "Research Director"
+          : level === "lead"
+            ? `${RESEARCH_SPECIALTY_LABELS[specialty ?? "reasoning"]} Research Lead`
+            : "Research Scientist"
+        : departmentId === "engineering"
+          ? level === "director"
+            ? "Engineering Director"
+            : level === "lead"
+              ? "Engineering Lead"
+              : "ML Engineer"
+          : level === "director"
+            ? "Regional GTM Director"
+            : level === "lead"
+              ? "Sales Lead"
+              : "Account Executive";
+    const profile = createEmployeeProfile(candidateSeed, departmentId, level, specialty, title);
+    return {
+      ...profile,
+      signingCost: Math.round(profile.salary * (level === "director" ? 0.3 : level === "lead" ? 0.22 : 0.16)),
+    };
+  });
 }
 
 export const COMPETITOR_BEHAVIORS: Record<CompetitorBehaviorId, { label: string; summary: string }> = {

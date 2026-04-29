@@ -5,7 +5,12 @@ import {
   BOARD_DIRECTIVES,
   COMPETITOR_COMPANIES,
   COMPETITOR_STRATEGIES,
+  createArchetypeEmployees,
+  createDefaultDepartments,
   createEmptyCohortSubscriberMap,
+  createHiringCandidates,
+  DEPARTMENT_LABELS,
+  DEPARTMENT_ROLE_MAP,
   RELIABILITY_TIER_IDS,
   RELIABILITY_TIERS,
   DATA_TIERS,
@@ -16,6 +21,7 @@ import {
   MODEL_SIZES,
   MONTHS,
   PRODUCT_TYPES,
+  RESEARCH_SPECIALTY_LABELS,
   ROLE_LABELS,
   RIVALS,
   SALARIES,
@@ -30,16 +36,21 @@ import {
   CohortDef,
   CohortId,
   CompetitorModelState,
+  DepartmentId,
   ModelState,
   ArchetypeModifiers,
   DataTierId,
+  EmployeeState,
   GameState,
+  HiringCandidateState,
   MarketModifier,
   MarketModifierId,
   ModelGoalId,
   NotificationTone,
   PendingBoardReview,
   PendingEvent,
+  ProductPeriodSnapshot,
+  ProductReportingSnapshot,
   ProductState,
   SubscriptionPlan,
   ProductTypeId,
@@ -53,6 +64,27 @@ import { getMarketCompanyTable as getMarketCompanyTableSystem, getMarketComparis
 import { createInitialCompetitorCompanyState as createInitialCompetitorCompanyStateSystem, getCompetitorCompanyDefinition as getCompetitorCompanyDefinitionSystem, getCompetitorCompanyState as getCompetitorCompanyStateSystem, updateCompetitorCompanies as updateCompetitorCompaniesSystem } from "./systems/competitors";
 import { calculateRunPreview as calculateRunPreviewSystem, getContextWindowLimit as getContextWindowLimitSystem, getDatasetPurchaseCost as getDatasetPurchaseCostSystem, getGoalCapabilityLift as getGoalCapabilityLiftSystem, getMemorySizeLimit as getMemorySizeLimitSystem, getResearchContribution as getResearchContributionSystem, launchRun as launchRunSystem } from "./systems/training";
 import { copyGame as copyGameSystem } from "./systems/state";
+import {
+  BURST_CLOUD_CAPACITY_RATIO,
+  BURST_CLOUD_COST_PER_POD,
+  BURST_CLOUD_MIN_PODS,
+  COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS,
+  DATACENTER_PROVISIONING_MONTHS,
+  DATACENTER_PROVISIONING_WEEKS,
+} from "./systems/balance";
+import { WEEKS_PER_MONTH, WEEKS_PER_QUARTER, getMonthIndexFromWeek, isMonthEndWeek, weekLabel as formatWeekLabel } from "./time";
+export {
+  WEEKS_PER_MONTH,
+  WEEKS_PER_QUARTER,
+  WEEKS_PER_YEAR,
+  getMonthIndexFromWeek,
+  getQuarterIndexFromWeek,
+  getYearFromWeek,
+  isMonthEndWeek,
+  isQuarterEndWeek,
+  isYearEndWeek,
+  monthLabelFromWeek,
+} from "./time";
 
 export function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -112,18 +144,27 @@ export function formatBigContext(value: number) {
 }
 
 export function getLoanTerms(principal: number, term: number) {
-  if (term <= 0) return { feePct: 0, totalRepayment: 0, monthlyPayment: 0 };
+  if (term <= 0) return { feePct: 0, totalRepayment: 0, monthlyPayment: 0, termWeeks: 0, weeklyPayment: 0 };
   if (term <= 6) {
+    const monthlyPayment = principal / term;
     return {
       feePct: 0,
       totalRepayment: principal,
-      monthlyPayment: principal / term,
+      monthlyPayment,
+      termWeeks: term * WEEKS_PER_MONTH,
+      weeklyPayment: monthlyPayment / WEEKS_PER_MONTH,
     };
   }
   const feePct = Math.min(0.25, (term - 6) * (0.25 / 114));
   const totalRepayment = principal * (1 + feePct);
   const monthlyPayment = totalRepayment / term;
-  return { feePct, totalRepayment, monthlyPayment };
+  return {
+    feePct,
+    totalRepayment,
+    monthlyPayment,
+    termWeeks: term * WEEKS_PER_MONTH,
+    weeklyPayment: monthlyPayment / WEEKS_PER_MONTH,
+  };
 }
 
 function roundVersion(value: number) {
@@ -155,14 +196,39 @@ export function getEngineerTrainingCostRange(game: Pick<GameState, "headcount">)
   };
 }
 
-export function getEngineerFailureRiskReduction(game: Pick<GameState, "headcount" | "upgrades" | "engineerTrainingLevel">) {
-  return game.headcount.engineers * 0.015 * getEngineerTrainingMultiplier(game.engineerTrainingLevel) + game.upgrades.training * 0.03;
+export function getEngineerFailureRiskReduction(game: Pick<GameState, "headcount" | "upgrades" | "engineerTrainingLevel" | "departments">) {
+  return game.headcount.engineers * 0.015 * getEngineerTrainingMultiplier(game.engineerTrainingLevel) + game.upgrades.training * 0.03 + game.departments.engineering.managementQuality * 0.0008;
 }
 
 export function monthLabel(turn: number) {
   const idx = (turn - 1) % 12;
   const year = 2026 + Math.floor((turn - 1) / 12);
   return `${MONTHS[idx]} ${year}`;
+}
+
+export function weekLabel(week: number) {
+  return formatWeekLabel(week);
+}
+
+function getCompatibleWeek(game: GameState) {
+  const week = (game as Partial<GameState>).week;
+  return typeof week === "number" && Number.isFinite(week)
+    ? Math.max(1, Math.floor(week))
+    : (game.turn - 1) * WEEKS_PER_MONTH + 1;
+}
+
+function getCompatibleMonthIndex(game: GameState) {
+  return getMonthIndexFromWeek(getCompatibleWeek(game));
+}
+
+function getModelBuiltWeek(model: Pick<ModelState, "weekBuilt" | "monthBuilt">) {
+  return typeof model.weekBuilt === "number" && Number.isFinite(model.weekBuilt)
+    ? Math.max(1, Math.floor(model.weekBuilt))
+    : legacyMonthToWeek(model.monthBuilt);
+}
+
+function legacyMonthToWeek(month: number) {
+  return Math.max(1, Math.floor((month - 1) * WEEKS_PER_MONTH + 1));
 }
 
 export function linePathFromPoints(points: number[], width = 320, height = 96) {
@@ -183,8 +249,134 @@ export function getQuarterNumber(turn: number) {
   return Math.floor((turn - 1) / 3) + 1;
 }
 
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readFiniteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getLegacyMonthField(record: Record<string, any>, key: string, fallback = 1) {
+  return Math.max(1, Math.floor(readFiniteNumber(record[key]) ?? fallback));
+}
+
+export function migrateMonthlySaveToWeekly(value: unknown): GameState | null {
+  if (!isRecord(value)) return null;
+
+  const game = value as GameState;
+  const legacyMonth = getLegacyMonthField(game, "turn", 1);
+  const currentWeek = Math.max(1, Math.floor(readFiniteNumber(game.week) ?? legacyMonthToWeek(legacyMonth)));
+  game.week = currentWeek;
+  game.turn = getMonthIndexFromWeek(currentWeek);
+
+  if (isRecord(game.funding)) {
+    const funding = game.funding as Record<string, any>;
+    const lastRaisedWeek = readFiniteNumber(funding.lastRaisedWeek);
+    const lastRaisedMonth = readFiniteNumber(funding.lastRaisedTurn);
+    funding.lastRaisedWeek = Math.max(
+      0,
+      Math.floor(lastRaisedWeek ?? (lastRaisedMonth && lastRaisedMonth > 0 ? legacyMonthToWeek(lastRaisedMonth) : 0)),
+    );
+    funding.lastRaisedTurn = getMonthIndexFromWeek(Math.max(1, funding.lastRaisedWeek));
+  }
+
+  const directiveWeeks = readFiniteNumber(game.directiveWeeksRemaining);
+  game.directiveWeeksRemaining = Math.max(0, Math.ceil(directiveWeeks ?? (readFiniteNumber(game.directiveTurnsRemaining) ?? 0) * WEEKS_PER_MONTH));
+  game.directiveTurnsRemaining = Math.ceil(game.directiveWeeksRemaining / WEEKS_PER_MONTH);
+
+  game.models?.forEach((model: any) => {
+    const weekBuilt = readFiniteNumber(model.weekBuilt);
+    model.weekBuilt = Math.max(1, Math.floor(weekBuilt ?? legacyMonthToWeek(getLegacyMonthField(model, "monthBuilt", 1))));
+    model.monthBuilt = getMonthIndexFromWeek(model.weekBuilt);
+    if (!isRecord(model.cohortTenureWeeks)) {
+      model.cohortTenureWeeks = createEmptyCohortSubscriberMap();
+    } else {
+      GLOBAL_COHORT_IDS.forEach((cohortId) => {
+        model.cohortTenureWeeks[cohortId] = Math.max(0, Math.floor(readFiniteNumber(model.cohortTenureWeeks[cohortId]) ?? 0));
+      });
+    }
+  });
+
+  game.activeRuns?.forEach((run: any) => {
+    run.totalWeeks = Math.max(1, Math.ceil(readFiniteNumber(run.totalWeeks) ?? (readFiniteNumber(run.totalMonths) ?? 1) * WEEKS_PER_MONTH));
+    run.weeksElapsed = Math.max(0, Math.floor(readFiniteNumber(run.weeksElapsed) ?? (readFiniteNumber(run.monthsElapsed) ?? 0) * WEEKS_PER_MONTH));
+    run.totalMonths = Number((run.totalWeeks / WEEKS_PER_MONTH).toFixed(2));
+    run.monthsElapsed = Number((run.weeksElapsed / WEEKS_PER_MONTH).toFixed(2));
+  });
+
+  game.cloud?.datacenters?.forEach((datacenter: any) => {
+    const weekBuilt = readFiniteNumber(datacenter.weekBuilt);
+    datacenter.weekBuilt = Math.max(1, Math.floor(weekBuilt ?? legacyMonthToWeek(getLegacyMonthField(datacenter, "monthBuilt", 1))));
+    datacenter.monthBuilt = getMonthIndexFromWeek(datacenter.weekBuilt);
+  });
+
+  game.cloud?.plannedDatacenters?.forEach((datacenter: any) => {
+    const weekOrdered = readFiniteNumber(datacenter.weekOrdered);
+    datacenter.weekOrdered = Math.max(1, Math.floor(weekOrdered ?? legacyMonthToWeek(getLegacyMonthField(datacenter, "monthOrdered", legacyMonth))));
+    datacenter.monthOrdered = getMonthIndexFromWeek(datacenter.weekOrdered);
+    datacenter.weeksRemaining = Math.max(0, Math.ceil(readFiniteNumber(datacenter.weeksRemaining) ?? (readFiniteNumber(datacenter.monthsRemaining) ?? DATACENTER_PROVISIONING_MONTHS) * WEEKS_PER_MONTH));
+    datacenter.monthsRemaining = Math.ceil(datacenter.weeksRemaining / WEEKS_PER_MONTH);
+  });
+
+  game.marketModifiers?.forEach((modifier: any) => {
+    modifier.weeksRemaining = Math.max(0, Math.ceil(readFiniteNumber(modifier.weeksRemaining) ?? (readFiniteNumber(modifier.turnsRemaining) ?? 0) * WEEKS_PER_MONTH));
+    modifier.turnsRemaining = Math.ceil(modifier.weeksRemaining / WEEKS_PER_MONTH);
+  });
+
+  Object.values(game.competitorCompanies ?? {}).forEach((competitor: any) => {
+    competitor.nextReleaseWeek = Math.max(1, Math.floor(readFiniteNumber(competitor.nextReleaseWeek) ?? legacyMonthToWeek(getLegacyMonthField(competitor, "nextReleaseMonth", 1))));
+    competitor.nextReleaseMonth = getMonthIndexFromWeek(competitor.nextReleaseWeek);
+    competitor.lastPriceReviewWeek = Math.max(0, Math.floor(readFiniteNumber(competitor.lastPriceReviewWeek) ?? 0));
+    competitor.pricingCooldownWeeks = Math.max(
+      0,
+      Math.floor(
+        readFiniteNumber(competitor.pricingCooldownWeeks) ??
+          competitor.lastPriceReviewWeek + COMPETITOR_PRICE_REVIEW_INTERVAL_WEEKS - currentWeek,
+      ),
+    );
+    competitor.models?.forEach((model: any) => {
+      model.weekBuilt = Math.max(1, Math.floor(readFiniteNumber(model.weekBuilt) ?? legacyMonthToWeek(getLegacyMonthField(model, "monthBuilt", 1))));
+      model.monthBuilt = getMonthIndexFromWeek(model.weekBuilt);
+      model.releaseWeek = Math.max(1, Math.floor(readFiniteNumber(model.releaseWeek) ?? legacyMonthToWeek(getLegacyMonthField(model, "releaseMonth", model.monthBuilt))));
+      model.releaseMonth = getMonthIndexFromWeek(model.releaseWeek);
+      const chatPriceHistory = Array.isArray(model.chatPriceHistory)
+        ? model.chatPriceHistory.filter((price: unknown) => readFiniteNumber(price) !== null)
+        : [];
+      const apiPriceHistory = Array.isArray(model.apiPriceHistory)
+        ? model.apiPriceHistory.filter((price: unknown) => readFiniteNumber(price) !== null)
+        : [];
+      model.chatPriceHistory = model.chatPrice === null ? [] : (chatPriceHistory.length ? chatPriceHistory : [model.chatPrice]).slice(-4);
+      model.apiPriceHistory = model.apiPrice === null ? [] : (apiPriceHistory.length ? apiPriceHistory : [model.apiPrice]).slice(-4);
+      model.launchChatPrice = model.chatPrice === null
+        ? null
+        : readFiniteNumber(model.launchChatPrice) ?? model.chatPriceHistory[0] ?? model.chatPrice;
+      model.launchApiPrice = model.apiPrice === null
+        ? null
+        : readFiniteNumber(model.launchApiPrice) ?? model.apiPriceHistory[0] ?? model.apiPrice;
+      if (!isRecord(model.cohortTenureWeeks)) {
+        model.cohortTenureWeeks = createEmptyCohortSubscriberMap();
+      } else {
+        GLOBAL_COHORT_IDS.forEach((cohortId) => {
+          model.cohortTenureWeeks[cohortId] = Math.max(0, Math.floor(readFiniteNumber(model.cohortTenureWeeks[cohortId]) ?? 0));
+        });
+      }
+    });
+  });
+
+  game.loans?.forEach((loan: any) => {
+    loan.termWeeks = Math.max(0, Math.ceil(readFiniteNumber(loan.termWeeks) ?? (readFiniteNumber(loan.term) ?? 0) * WEEKS_PER_MONTH));
+    loan.elapsedWeeks = Math.max(0, Math.ceil(readFiniteNumber(loan.elapsedWeeks) ?? (readFiniteNumber(loan.elapsed) ?? 0) * WEEKS_PER_MONTH));
+    loan.weeklyPayment = readFiniteNumber(loan.weeklyPayment) ?? (readFiniteNumber(loan.monthlyPayment) ?? 0) / WEEKS_PER_MONTH;
+  });
+
+  return game;
+}
+
 export function copyGame(game: GameState): GameState {
-  return copyGameSystem(game);
+  const next = copyGameSystem(game);
+  migrateMonthlySaveToWeekly(next);
+  return next;
 }
 
 export function getArchetype(game: GameState) {
@@ -196,12 +388,68 @@ export function getDirective(game: GameState) {
 }
 
 export function getHeadcountTotal(game: GameState) {
-  return Object.values(game.headcount).reduce((sum, count) => sum + count, 0);
+  return Object.values(game.headcount).reduce((sum, count) => sum + count, 0) + game.employees.filter((employee) => employee.active).length;
 }
 
-export function getPayroll(game: Pick<GameState, "headcount">) {
+function getNamedPayroll(game: Pick<GameState, "employees">) {
+  return game.employees
+    .filter((employee) => employee.active)
+    .reduce((sum, employee) => sum + employee.salary / 12, 0);
+}
+
+export function getPayroll(game: Pick<GameState, "headcount" | "employees">) {
   return (Object.entries(game.headcount) as [RoleId, number][])
-    .reduce((sum, [role, count]) => sum + count * SALARIES[role], 0);
+    .reduce((sum, [role, count]) => sum + count * SALARIES[role], 0) + getNamedPayroll(game);
+}
+
+function getActiveEmployees(game: Pick<GameState, "employees">) {
+  return game.employees.filter((employee) => employee.active);
+}
+
+function getEmployeeById(game: Pick<GameState, "employees">, employeeId: number | null | undefined) {
+  return game.employees.find((employee) => employee.id === employeeId) ?? null;
+}
+
+function getAssignedResearchers(game: Pick<GameState, "employees" | "trainingConfig">) {
+  return game.trainingConfig.assignedResearcherIds
+    .map((employeeId) => getEmployeeById(game, employeeId))
+    .filter((employee): employee is NonNullable<ReturnType<typeof getEmployeeById>> => Boolean(employee && employee.active && employee.departmentId === "research"));
+}
+
+function getLevelWeight(level: EmployeeState["level"]) {
+  if (level === "executive") return 4;
+  if (level === "director") return 3;
+  if (level === "lead") return 2;
+  return 1;
+}
+
+function refreshDepartmentLeads(game: Pick<GameState, "departments" | "employees">) {
+  (Object.keys(game.departments) as DepartmentId[]).forEach((departmentId) => {
+    const members = game.employees
+      .filter((employee) => employee.active && employee.departmentId === departmentId)
+      .sort((left, right) => getLevelWeight(right.level) - getLevelWeight(left.level) || right.leadership - left.leadership || right.skill - left.skill);
+    const lead = members[0] ?? null;
+    const managementQuality = members.length
+      ? Math.round(members.reduce((sum, employee) => sum + employee.leadership, 0) / members.length)
+      : 35;
+    const morale = members.length
+      ? Math.round(
+        clamp(
+          48 +
+            managementQuality * 0.32 +
+            members.reduce((sum, employee) => sum + employee.loyalty - employee.burnout, 0) / members.length * 0.28,
+          25,
+          92,
+        ),
+      )
+      : 45;
+    game.departments[departmentId] = {
+      ...game.departments[departmentId],
+      leadEmployeeId: lead?.id ?? null,
+      managementQuality,
+      morale,
+    };
+  });
 }
 
 export function getModelById(game: GameState, id: number | null) {
@@ -257,6 +505,10 @@ function getDefaultCompetitorAdminState(competitorId?: string) {
 function createDefaultModelPerformance(): GameState["modelPerformance"][string] {
   return {
     totalRevenue: 0,
+    lastWeekRevenue: 0,
+    lastWeekAcquisition: 0,
+    lastWeekChurn: 0,
+    lastWeekUsers: 0,
     lastMonthRevenue: 0,
     lastMonthAcquisition: 0,
     lastMonthChurn: 0,
@@ -575,7 +827,12 @@ function buildCompetitorRelease(
       releaseMonth: monthBuilt,
       chatPrice,
       apiPrice,
+      launchChatPrice: chatPrice,
+      launchApiPrice: apiPrice,
+      chatPriceHistory: chatPrice === null ? [] : [chatPrice],
+      apiPriceHistory: apiPrice === null ? [] : [apiPrice],
       subscribersByCohort: createEmptyCohortSubscriberMap(),
+      cohortTenureWeeks: createEmptyCohortSubscriberMap(),
       reliability: Object.fromEntries(RELIABILITY_TIER_IDS.map(tier => [tier, Math.min(0.9, competitor.releaseIndex * 0.15 + (admin.strategy === "balanced" ? 0.3 : 0.5))])) as Record<ReliabilityTierId, number>,
     },
     totalCost,
@@ -798,9 +1055,10 @@ function getBlendedModelMetrics(game: GameState, product: ProductState) {
   const trust = models.reduce((sum, model) => sum + model.trust, 0) / models.length;
   const contextWindow = models.reduce((sum, model) => sum + model.contextWindow, 0) / models.length;
   const averagePrice = models.reduce((sum, model) => sum + getModelPrice(product, model.id), 0) / models.length;
-  const averageAge = models.reduce((sum, model) => sum + Math.max(0, game.turn - model.monthBuilt), 0) / models.length;
+  const currentWeek = getCompatibleWeek(game);
+  const averageAge = models.reduce((sum, model) => sum + Math.max(0, (currentWeek - getModelBuiltWeek(model)) / WEEKS_PER_MONTH), 0) / models.length;
   const recencyScore = models.reduce(
-    (sum, model) => sum + clamp((18 - Math.max(0, game.turn - model.monthBuilt)) / 18, 0.2, 1),
+    (sum, model) => sum + clamp((18 - Math.max(0, (currentWeek - getModelBuiltWeek(model)) / WEEKS_PER_MONTH)) / 18, 0.2, 1),
     0,
   ) / models.length;
   const goalScores = models.reduce(
@@ -867,7 +1125,7 @@ function settleCloudRental(
     (sum, c) => sum + c.models.length,
     0,
   );
-  const baseDemand = Math.round(game.turn * 10 + totalCompetitorModels * 30 + 60);
+  const baseDemand = Math.round(getCompatibleMonthIndex(game) * 10 + totalCompetitorModels * 30 + 60);
 
   // Price sensitivity: at or below market rate demand is fully met;
   // above market rate demand falls off exponentially.
@@ -879,6 +1137,63 @@ function settleCloudRental(
   return { revenue, podsRented };
 }
 
+function getLoanTermWeeks(loan: GameState["loans"][number]) {
+  return loan.termWeeks ?? loan.term * WEEKS_PER_MONTH;
+}
+
+function getLoanElapsedWeeks(loan: GameState["loans"][number]) {
+  return loan.elapsedWeeks ?? loan.elapsed * WEEKS_PER_MONTH;
+}
+
+function getWeeklyLoanPayment(loan: GameState["loans"][number], week: number) {
+  return loan.weeklyPayment !== undefined
+    ? getWeeklyPortion(loan.weeklyPayment * WEEKS_PER_MONTH, week)
+    : getWeeklyPortion(loan.monthlyPayment, week);
+}
+
+function settleWeeklyOperatingCashflow(next: GameState, week: number) {
+  ensureOperatingCashflowState(next);
+
+  const effects = getDirectiveEffects(next);
+  const trainingDemand = next.activeRuns.reduce((sum, run) => sum + run.computeNeed, 0);
+  const allocatedTraining = (next.cloud.reservedPods * next.cloud.trainingPct) / 100;
+  const allocatedServing = (next.cloud.reservedPods * (100 - next.cloud.trainingPct)) / 100;
+  const servingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
+  const surplusPods = Math.max(0, allocatedServing - servingDemand) + Math.max(0, allocatedTraining - trainingDemand);
+  const rentalResult = settleCloudRental(next, Math.floor(surplusPods));
+
+  const loanPayments = next.loans.reduce((sum, loan) => sum + getWeeklyLoanPayment(loan, week), 0);
+  const payroll = getWeeklyPortion(getPayroll(next), week);
+  const marketingSpend = getWeeklyPortion(next.marketingBudgetMillions * 1000000, week);
+  const baseOpsCost = getWeeklyPortion(BASE_OPS_COST, week);
+  const computeReservedCost = getWeeklyPortion(next.cloud.reservedPods * getReservedCostPerPod(next) * effects.reservedCostMultiplier, week);
+  const cloudRentalRevenue = getWeeklyPortion(rentalResult.revenue, week);
+  const weeklySnapshot = {
+    payroll,
+    marketingSpend,
+    baseOpsCost,
+    loanPayments,
+    computeReservedCost,
+    cloudRentalRevenue,
+    cloudRentalPodsRented: rentalResult.podsRented,
+    developmentCost: 0,
+  };
+
+  next.cash += cloudRentalRevenue - payroll - marketingSpend - baseOpsCost - computeReservedCost - loanPayments;
+  next.currentMonthCashflow = addOperatingCashflowSnapshot(next.currentMonthCashflow, weeklySnapshot);
+  next.loans = next.loans.filter((loan) => {
+    const elapsedWeeks = getLoanElapsedWeeks(loan) + 1;
+    const termWeeks = getLoanTermWeeks(loan);
+    loan.termWeeks = termWeeks;
+    loan.elapsedWeeks = elapsedWeeks;
+    loan.elapsed = Math.min(loan.term, Math.floor(elapsedWeeks / WEEKS_PER_MONTH));
+    loan.weeklyPayment = loan.weeklyPayment ?? loan.monthlyPayment / WEEKS_PER_MONTH;
+    return elapsedWeeks < termWeeks;
+  });
+
+  return weeklySnapshot;
+}
+
 export function updateCloudRentalPrice(game: GameState, pricePerPod: number): GameState {
   const next = copyGame(game);
   next.cloudRental.pricePerPod = Math.max(0, Math.round(pricePerPod));
@@ -888,6 +1203,63 @@ export function updateCloudRentalPrice(game: GameState, pricePerPod: number): Ga
 export function getDatacenterBuildCost(pods: number) {
   const normalizedPods = clamp(Math.round(pods), 8, 240);
   return 900000 + normalizedPods * 125000;
+}
+
+function getPlannedDatacenterWeeksRemaining(datacenter: GameState["cloud"]["plannedDatacenters"][number]) {
+  if (typeof datacenter.weeksRemaining === "number" && Number.isFinite(datacenter.weeksRemaining)) {
+    return Math.max(0, Math.ceil(datacenter.weeksRemaining));
+  }
+  return Math.max(0, Math.ceil((datacenter.monthsRemaining ?? DATACENTER_PROVISIONING_MONTHS) * WEEKS_PER_MONTH));
+}
+
+function resolvePlannedDatacenters(game: GameState) {
+  let capacityAdded = 0;
+  const activated: GameState["cloud"]["datacenters"] = [];
+
+  game.cloud.plannedDatacenters = game.cloud.plannedDatacenters.reduce((pending, datacenter) => {
+    const weeksRemaining = getPlannedDatacenterWeeksRemaining(datacenter) - 1;
+    if (weeksRemaining <= 0) {
+      const activatedDatacenter = {
+        id: datacenter.id,
+        name: datacenter.name,
+        pods: datacenter.pods,
+        buildCost: datacenter.buildCost,
+        weekBuilt: getCompatibleWeek(game),
+        monthBuilt: getMonthIndexFromWeek(getCompatibleWeek(game)),
+      };
+      activated.push(activatedDatacenter);
+      capacityAdded += datacenter.pods;
+      return pending;
+    }
+
+    pending.push({
+      ...datacenter,
+      weeksRemaining,
+      monthsRemaining: Math.ceil(weeksRemaining / WEEKS_PER_MONTH),
+    });
+    return pending;
+  }, [] as GameState["cloud"]["plannedDatacenters"]);
+
+  if (activated.length > 0) {
+    game.cloud.datacenters.push(...activated);
+    game.cloud.reservedPods += capacityAdded;
+    addNotification(
+      game,
+      activated.length === 1
+        ? `${activated[0].name} came online with ${activated[0].pods} pods.`
+        : `${activated.length} datacenters came online with ${capacityAdded} total pods.`,
+      "good",
+    );
+  }
+
+  return capacityAdded;
+}
+
+function getBurstCloudCapacity(game: GameState, allocatedServing: number) {
+  return Math.max(
+    BURST_CLOUD_MIN_PODS,
+    Math.round(allocatedServing * BURST_CLOUD_CAPACITY_RATIO + game.upgrades.cloud * 6),
+  );
 }
 
 export function getDatasetPurchaseCost(tierKey: DataTierId, packId: keyof typeof DATASET_PACKS) {
@@ -906,7 +1278,7 @@ export function getProductComputeUsage(
   game: GameState,
   product: ProductState,
   metrics: ReturnType<typeof getBlendedModelMetrics>
-): { demand: number; tokensMillions: number } {
+): ReturnType<typeof getProductComputeUsageSystem> {
   return getProductComputeUsageSystem(game, product, metrics);
 }
 
@@ -927,14 +1299,14 @@ function addNotification(game: GameState, text: string, tone: NotificationTone =
   game.notifications = game.notifications.slice(0, 12);
 }
 
-function generateLossCurve(totalMonths: number, severity = 0) {
+function generateLossCurve(totalWeeks: number, severity = 0) {
   const points: number[] = [];
   let current = rand(2.4, 3.2);
-  for (let index = 0; index < totalMonths; index += 1) {
-    const trend = 0.18 + index * 0.02;
+  for (let index = 0; index < totalWeeks; index += 1) {
+    const trend = (0.18 + (index / WEEKS_PER_MONTH) * 0.02) / WEEKS_PER_MONTH;
     current -= trend * rand(0.7, 1.15);
     current += rand(-0.08, 0.12);
-    if (severity > 0 && index === Math.max(1, Math.floor(totalMonths / 2))) {
+    if (severity > 0 && index === Math.max(1, Math.floor(totalWeeks / 2))) {
       current += severity;
     }
     points.push(Math.max(0.35, Number(current.toFixed(2))));
@@ -942,9 +1314,68 @@ function generateLossCurve(totalMonths: number, severity = 0) {
   return points;
 }
 
+function getRunTotalWeeks(run: ActiveRun) {
+  if (typeof run.totalWeeks === "number" && Number.isFinite(run.totalWeeks)) {
+    return Math.max(1, Math.ceil(run.totalWeeks));
+  }
+  return Math.max(1, Math.ceil((run.totalMonths ?? 1) * WEEKS_PER_MONTH));
+}
+
+function getRunWeeksElapsed(run: ActiveRun) {
+  if (typeof run.weeksElapsed === "number" && Number.isFinite(run.weeksElapsed)) {
+    return Math.max(0, Math.floor(run.weeksElapsed));
+  }
+  return Math.max(0, Math.ceil((run.monthsElapsed ?? 0) * WEEKS_PER_MONTH));
+}
+
+function syncRunWeekFields(run: ActiveRun) {
+  run.totalWeeks = getRunTotalWeeks(run);
+  run.weeksElapsed = Math.min(getRunWeeksElapsed(run), run.totalWeeks);
+  run.totalMonths = Number((run.totalWeeks / WEEKS_PER_MONTH).toFixed(2));
+  run.monthsElapsed = Number((run.weeksElapsed / WEEKS_PER_MONTH).toFixed(2));
+}
+
+function addRunWeeks(run: ActiveRun, weeks: number) {
+  syncRunWeekFields(run);
+  run.totalWeeks = Math.max(1, Math.ceil(run.totalWeeks + weeks));
+  run.totalMonths = Number((run.totalWeeks / WEEKS_PER_MONTH).toFixed(2));
+}
+
+function monthlyProbabilityToWeekly(monthlyProbability: number) {
+  return 1 - Math.pow(1 - clamp(monthlyProbability, 0, 0.999), 1 / WEEKS_PER_MONTH);
+}
+
+const WEEKLY_TRAINING_EVENT_PROBABILITY = monthlyProbabilityToWeekly(0.52);
+const WEEKLY_TALENT_EVENT_FINAL_PROBABILITY = monthlyProbabilityToWeekly(0.45);
+const WEEKLY_TALENT_BREAKTHROUGH_DENOMINATOR = 120 * WEEKS_PER_MONTH;
+
 function nextRivalCooldown(rivalId: RivalId) {
   const [min, max] = RIVALS[rivalId].cadence;
-  return randInt(min, max);
+  return randInt(min * WEEKS_PER_MONTH, max * WEEKS_PER_MONTH);
+}
+
+function getMarketModifierWeeksRemaining(modifier: MarketModifier) {
+  if (typeof modifier.weeksRemaining === "number" && Number.isFinite(modifier.weeksRemaining)) {
+    return Math.max(0, Math.ceil(modifier.weeksRemaining));
+  }
+  return Math.max(0, Math.ceil((modifier.turnsRemaining ?? 0) * WEEKS_PER_MONTH));
+}
+
+function syncMarketModifierWeeks(modifier: MarketModifier, weeksRemaining: number) {
+  modifier.weeksRemaining = Math.max(0, weeksRemaining);
+  modifier.turnsRemaining = Math.ceil(modifier.weeksRemaining / WEEKS_PER_MONTH);
+}
+
+function getDirectiveWeeksRemaining(game: GameState) {
+  if (typeof game.directiveWeeksRemaining === "number" && Number.isFinite(game.directiveWeeksRemaining)) {
+    return Math.max(0, Math.ceil(game.directiveWeeksRemaining));
+  }
+  return Math.max(0, Math.ceil(game.directiveTurnsRemaining * WEEKS_PER_MONTH));
+}
+
+function syncDirectiveWeeks(game: GameState, weeksRemaining: number) {
+  game.directiveWeeksRemaining = Math.max(0, weeksRemaining);
+  game.directiveTurnsRemaining = Math.ceil(game.directiveWeeksRemaining / WEEKS_PER_MONTH);
 }
 
 function getDirectiveEffects(game: GameState) {
@@ -1002,16 +1433,19 @@ function upsertMarketModifier(game: GameState, modifier: Omit<MarketModifier, "i
   );
 
   if (existing) {
-    existing.turnsRemaining = modifier.turnsRemaining;
+    syncMarketModifierWeeks(existing, getMarketModifierWeeksRemaining(modifier));
     existing.intensity = modifier.intensity;
     existing.title = modifier.title;
     existing.description = modifier.description;
     return;
   }
 
+  const weeksRemaining = getMarketModifierWeeksRemaining(modifier);
   game.marketModifiers.push({
     id: game.nextId++,
     ...modifier,
+    weeksRemaining,
+    turnsRemaining: Math.ceil(weeksRemaining / WEEKS_PER_MONTH),
   });
 }
 
@@ -1026,8 +1460,180 @@ function createPendingBoardReview(game: GameState): PendingBoardReview {
   if (reasons.length === 0) reasons.push("The company is stable enough to choose its next strategic push deliberately.");
 
   return {
-    quarter: getQuarterNumber(game.turn),
+    quarter: getQuarterNumber(getCompatibleMonthIndex(game)),
     reasons,
+  };
+}
+
+function createEmptyProductTraffic(): ProductState["traffic"] {
+  return {
+    baselineTokensMillions: 0,
+    burstMultiplier: 1,
+    averageContextUtilization: 0.2,
+    batchingFriendliness: 1,
+    viralPressure: 0,
+  };
+}
+
+function createEmptyProductServing(): ProductState["serving"] {
+  return {
+    effectiveTokensPerPod: 750,
+    contextPenalty: 1,
+    batchingEfficiency: 1,
+    modelWeightPenalty: 1,
+    hardwareEfficiency: 1,
+    strategyCapacityPenalty: 1,
+    burstPodsUsed: 0,
+    burstCost: 0,
+    overflowPods: 0,
+    capacityPressure: 0,
+  };
+}
+
+function createEmptyProductPeriodSnapshot(): ProductPeriodSnapshot {
+  return {
+    revenue: 0,
+    users: 0,
+    acquisition: 0,
+    churnedUsers: 0,
+    churn: 0,
+    tokenUsageMillions: 0,
+    computeDemand: 0,
+    computeCost: 0,
+  };
+}
+
+function createEmptyProductReportingSnapshot(): ProductReportingSnapshot {
+  const products = {
+    chatbot: createEmptyProductPeriodSnapshot(),
+    api: createEmptyProductPeriodSnapshot(),
+  };
+
+  return {
+    revenue: 0,
+    users: 0,
+    acquisition: 0,
+    churnedUsers: 0,
+    churn: 0,
+    tokenUsageMillions: 0,
+    computeDemand: 0,
+    computeCost: 0,
+    products,
+  };
+}
+
+function summarizeProductSnapshot(products: Record<ProductTypeId, ProductPeriodSnapshot>): ProductReportingSnapshot {
+  const totals = (Object.keys(products) as ProductTypeId[]).reduce(
+    (summary, type) => {
+      const product = products[type];
+      summary.revenue += product.revenue;
+      summary.users += product.users;
+      summary.acquisition += product.acquisition;
+      summary.churnedUsers += product.churnedUsers;
+      summary.tokenUsageMillions += product.tokenUsageMillions;
+      summary.computeDemand += product.computeDemand;
+      summary.computeCost += product.computeCost;
+      return summary;
+    },
+    {
+      revenue: 0,
+      users: 0,
+      acquisition: 0,
+      churnedUsers: 0,
+      tokenUsageMillions: 0,
+      computeDemand: 0,
+      computeCost: 0,
+    },
+  );
+  const churn = totals.users + totals.churnedUsers > 0 ? totals.churnedUsers / (totals.users + totals.churnedUsers) : 0;
+
+  return {
+    revenue: Math.round(totals.revenue),
+    users: Math.round(totals.users),
+    acquisition: Math.round(totals.acquisition),
+    churnedUsers: Math.round(totals.churnedUsers),
+    churn: Number(churn.toFixed(3)),
+    tokenUsageMillions: Number(totals.tokenUsageMillions.toFixed(2)),
+    computeDemand: Number(totals.computeDemand.toFixed(2)),
+    computeCost: Math.round(totals.computeCost),
+    products,
+  };
+}
+
+function ensureProductReportingState(game: GameState) {
+  if (!game.lastWeek) {
+    game.lastWeek = createEmptyProductReportingSnapshot();
+  }
+  if (!game.currentMonthToDate) {
+    game.currentMonthToDate = createEmptyProductReportingSnapshot();
+  }
+}
+
+function createEmptyOperatingCashflowSnapshot(): GameState["currentMonthCashflow"] {
+  return {
+    payroll: 0,
+    marketingSpend: 0,
+    baseOpsCost: 0,
+    loanPayments: 0,
+    computeReservedCost: 0,
+    cloudRentalRevenue: 0,
+    cloudRentalPodsRented: 0,
+    developmentCost: 0,
+  };
+}
+
+function ensureOperatingCashflowState(game: GameState) {
+  if (!game.currentMonthCashflow) {
+    game.currentMonthCashflow = createEmptyOperatingCashflowSnapshot();
+  } else {
+    game.currentMonthCashflow.developmentCost = game.currentMonthCashflow.developmentCost ?? 0;
+  }
+}
+
+function getWeekOfMonth(week: number) {
+  return ((Math.max(1, Math.floor(week)) - 1) % WEEKS_PER_MONTH) + 1;
+}
+
+function getWeeklyPortion(monthlyAmount: number, week: number) {
+  const total = Math.round(monthlyAmount);
+  const sign = total < 0 ? -1 : 1;
+  const abs = Math.abs(total);
+  const base = Math.floor(abs / WEEKS_PER_MONTH);
+  const remainder = abs - base * WEEKS_PER_MONTH;
+  return sign * (base + (getWeekOfMonth(week) <= remainder ? 1 : 0));
+}
+
+function addOperatingCashflowSnapshot(
+  current: GameState["currentMonthCashflow"],
+  addition: GameState["currentMonthCashflow"],
+): GameState["currentMonthCashflow"] {
+  return {
+    payroll: current.payroll + addition.payroll,
+    marketingSpend: current.marketingSpend + addition.marketingSpend,
+    baseOpsCost: current.baseOpsCost + addition.baseOpsCost,
+    loanPayments: current.loanPayments + addition.loanPayments,
+    computeReservedCost: current.computeReservedCost + addition.computeReservedCost,
+    cloudRentalRevenue: current.cloudRentalRevenue + addition.cloudRentalRevenue,
+    cloudRentalPodsRented: current.cloudRentalPodsRented + addition.cloudRentalPodsRented,
+    developmentCost: (current.developmentCost ?? 0) + (addition.developmentCost ?? 0),
+  };
+}
+
+function addProductPeriodSnapshot(
+  current: ProductPeriodSnapshot,
+  addition: ProductPeriodSnapshot,
+): ProductPeriodSnapshot {
+  const users = addition.users;
+  const churnedUsers = current.churnedUsers + addition.churnedUsers;
+  return {
+    revenue: current.revenue + addition.revenue,
+    users,
+    acquisition: current.acquisition + addition.acquisition,
+    churnedUsers,
+    churn: users + churnedUsers > 0 ? Number((churnedUsers / (users + churnedUsers)).toFixed(3)) : 0,
+    tokenUsageMillions: current.tokenUsageMillions + addition.tokenUsageMillions,
+    computeDemand: addition.computeDemand,
+    computeCost: current.computeCost + addition.computeCost,
   };
 }
 
@@ -1047,6 +1653,9 @@ function createDefaultProducts(): GameState["products"] {
       acquisition: 0,
       trust: 50,
       lastLaunchMonth: 0,
+      servingStrategy: "flagship",
+      traffic: createEmptyProductTraffic(),
+      serving: createEmptyProductServing(),
       subscriptionPlans: [
         { id: "free_tier", name: "Free Tier", price: 0, tokenLimitMillions: 100, subscribers: 0, revenue: 0, profit: 0, tokenUsageMillions: 0 },
         { id: "pro_tier", name: "Pro Tier", price: 20, tokenLimitMillions: 5000, subscribers: 0, revenue: 0, profit: 0, tokenUsageMillions: 0 }
@@ -1066,11 +1675,21 @@ function createDefaultProducts(): GameState["products"] {
       acquisition: 0,
       trust: 50,
       lastLaunchMonth: 0,
+      servingStrategy: "enterprise_sla",
+      traffic: createEmptyProductTraffic(),
+      serving: createEmptyProductServing(),
     },
   };
 }
 
-function updateModelPerformance(game: GameState) {
+function updateModelPerformance(
+  game: GameState,
+  periodProducts?: Partial<Record<ProductTypeId, ProductPeriodSnapshot>>,
+  options?: { rollupMonth?: boolean },
+) {
+  updateModelPerformanceSystem(game, periodProducts, options);
+  return;
+
   const nextPerformance: GameState["modelPerformance"] = Object.fromEntries(
     game.models.map((model) => [String(model.id), { ...(game.modelPerformance[String(model.id)] ?? createDefaultModelPerformance()) }]),
   );
@@ -1098,7 +1717,7 @@ function updateModelPerformance(game: GameState) {
     const modelAges: Record<string, number> = {};
     product.modelIds.forEach((modelId) => {
       const model = game.models.find((m) => m.id === modelId);
-      modelAges[String(modelId)] = model ? Math.max(0, game.turn - model.monthBuilt) : 999;
+      modelAges[String(modelId)] = model ? Math.max(0, (getCompatibleWeek(game) - getModelBuiltWeek(model)) / WEEKS_PER_MONTH) : 999;
     });
     const avgAge = Object.values(modelAges).reduce((sum, a) => sum + a, 0) / modelCount;
     const storedPriorUsers: Record<string, number> = {};
@@ -1163,12 +1782,20 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
     name: "Founding Campus",
     pods: reservedPods,
     buildCost: 0,
+    weekBuilt: 1,
     monthBuilt: 1,
   };
-
-  return {
+  const employees = createArchetypeEmployees(archetypeId).map((employee, index) => ({
+    ...employee,
+    id: index + 1,
+    assignedRunId: null,
+  }));
+  const nextBaseId = employees.length + 4;
+  const departments = createDefaultDepartments();
+  const baseState = {
     turn: 1,
-    status: "playing",
+    week: 1,
+    status: "playing" as const,
     engineerTrainingLevel: 0,
     archetype: archetypeId,
     marketingBudgetMillions: 0,
@@ -1178,6 +1805,7 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
     boardPressure: archetype.modifiers.startingBoardPressure,
     currentDirective: null,
     directiveTurnsRemaining: 0,
+    directiveWeeksRemaining: 0,
     marketStandard: archetype.startingMarketStandard,
     competitorLaunchShock: 0,
     rivals: {
@@ -1193,16 +1821,24 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
       reservedPods,
       trainingPct: 55,
       datacenters: [initialDatacenter],
+      plannedDatacenters: [],
       nextDatacenterId: 2,
     },
     cloudRental: {
       pricePerPod: 0,
     },
+    departments,
+    employees,
+    hiringMarket: createHiringCandidates(`${archetypeId}:market`).map((candidate, index) => ({
+      ...candidate,
+      id: nextBaseId + index,
+    })),
     globalCohorts: JSON.parse(JSON.stringify(GLOBAL_COHORTS)),
     products: createDefaultProducts(),
     trainingConfig: {
       ...archetype.startingTrainingConfig,
       goals: { ...archetype.startingTrainingConfig.goals },
+      assignedResearcherIds: [],
     },
     deficitMonths: 0,
     loans: [],
@@ -1211,7 +1847,7 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
     modelPerformance: {},
     pendingEvent: null,
     pendingBoardReview: null,
-    funding: { available: false, offer: 0, dilution: 0, lastRaisedTurn: 0 },
+    funding: { available: false, offer: 0, dilution: 0, lastRaisedWeek: 0, lastRaisedTurn: 0 },
     totalDilution: 0,
     history: { revenue: [], profit: [], arr: [], trust: [], boardPressure: [] },
     goalEconomics: JSON.parse(JSON.stringify(DEFAULT_GOAL_ECONOMICS)),
@@ -1225,37 +1861,53 @@ export function createInitialGame(archetypeId: ArchetypeId): GameState {
       ]),
     ),
     notifications: [
-      { id: 1, text: `${archetype.name} selected. ${archetype.summary}`, tone: "good" },
+      { id: 1, text: `${archetype.name} selected. ${archetype.summary}`, tone: "good" as const },
       {
         id: 2,
         text: "Board brief: pick a strategy, survive the compute bill, and do not let rivals define your lane.",
-        tone: "info",
+        tone: "info" as const,
       },
       {
         id: 3,
         text: `Starting posture: Trust ${archetype.startingTrust}, Consumer Dist ${archetype.startingDistribution.consumer}, Enterprise Dist ${archetype.startingDistribution.enterprise}.`,
-        tone: "warning",
+        tone: "warning" as const,
       },
     ],
+    lastWeek: createEmptyProductReportingSnapshot(),
+    currentMonthToDate: createEmptyProductReportingSnapshot(),
+    currentMonthCashflow: createEmptyOperatingCashflowSnapshot(),
     lastMonth: {
       revenue: 0,
       expenses: reservedPods * BASE_POD_COST + BASE_OPS_COST,
       profit: -(reservedPods * BASE_POD_COST + BASE_OPS_COST),
       users: 0,
-      payroll: getPayroll({ headcount: archetype.startingHeadcount }),
+      payroll: 0,
       marketingSpend: 0,
+      baseOpsCost: BASE_OPS_COST,
+      loanPayments: 0,
       computeReservedCost: reservedPods * BASE_POD_COST,
+      burstCloudCost: 0,
       overflowCost: 0,
       servingDemand: 0,
       trainingDemand: 0,
+      burstCloudPodsUsed: 0,
+      datacenterCapacityAdded: 0,
+      datacenterCapacityPending: 0,
       trustDelta: 0,
       distributionDelta: { consumer: 0, enterprise: 0 },
       cloudRentalRevenue: 0,
       cloudRentalPodsRented: 0,
+      developmentCost: 0,
+      hiringSpend: 0,
+      severanceCost: 0,
     },
     cash: archetype.startingCash,
-    nextId: 4,
+    nextId: nextBaseId + 6,
   };
+  refreshDepartmentLeads(baseState);
+  baseState.lastMonth.payroll = getPayroll(baseState);
+
+  return baseState;
 }
 
 export function calculateRunPreview(game: GameState) {
@@ -1285,7 +1937,7 @@ function createRunEvent(run: ActiveRun): PendingEvent {
       title: "Data Pipeline Glitch",
       body: "Integrity checks caught malformed shards. You can pause for cleanup or push through now.",
       choices: [
-        { key: "clean", label: "Pause And Clean For $250K", effect: "Adds one month, trims risk, preserves trust." },
+        { key: "clean", label: "Pause And Clean For $250K", effect: "Adds four weeks, trims risk, preserves trust." },
         { key: "skip", label: "Skip QA", effect: "Saves time, boosts capability slightly, hurts trust." },
       ],
     };
@@ -1303,11 +1955,56 @@ function createRunEvent(run: ActiveRun): PendingEvent {
   };
 }
 
-function applyEventChoice(game: GameState, event: PendingEvent, choiceKey: string) {
-  const run = game.activeRuns.find((entry) => entry.id === event.runId);
-  if (!run) return;
+function createTalentEvent(run: ActiveRun, employee: EmployeeState): PendingEvent {
+  const roll = randInt(1, 3);
 
-  if (event.type === "loss_spike") {
+  if (roll === 1) {
+    return {
+      type: "talent_poach",
+      runId: run.id,
+      employeeId: employee.id,
+      title: `${employee.name} Has A Competing Offer`,
+      body: `${employee.name}, your ${employee.title.toLowerCase()}, is being poached mid-run. Losing them would weaken ${run.name} and shake the ${DEPARTMENT_LABELS[employee.departmentId]} org.`,
+      choices: [
+        { key: "retain", label: "Match And Retain", effect: "Pay retention cash, reduce poach risk, protect the run." },
+        { key: "let_go", label: "Let Them Walk", effect: "Save cash now, but hurt the run and department morale." },
+      ],
+    };
+  }
+
+  if (roll === 2) {
+    return {
+      type: "talent_breakthrough",
+      runId: run.id,
+      employeeId: employee.id,
+      title: `${employee.name} Found A Breakthrough`,
+      body: `${employee.name} thinks they found a real ${RESEARCH_SPECIALTY_LABELS[employee.specialty ?? "reasoning"].toLowerCase()} advance for ${run.name}. You can chase upside or fold it in carefully.`,
+      choices: [
+        { key: "push_breakthrough", label: "Push It Into The Run", effect: "Raise capability more, with a bit more execution risk." },
+        { key: "bank_breakthrough", label: "Bank It Carefully", effect: "Smaller upside, lower downside, morale boost." },
+      ],
+    };
+  }
+
+  return {
+    type: "talent_burnout",
+    runId: run.id,
+    employeeId: employee.id,
+    title: `${employee.name} Is Burning Out`,
+    body: `${employee.name} is showing visible burnout on ${run.name}. You can protect them, or squeeze for schedule at the risk of losing them.`,
+    choices: [
+      { key: "give_relief", label: "Give Relief Time", effect: "Protects the person, slows the run slightly." },
+      { key: "push_through", label: "Push Through", effect: "Keeps tempo, but raises departure and failure risk." },
+    ],
+  };
+}
+
+function applyEventChoice(game: GameState, event: PendingEvent, choiceKey: string) {
+  const run = event.runId !== null ? game.activeRuns.find((entry) => entry.id === event.runId) : null;
+  const employee = event.employeeId ? getEmployeeById(game, event.employeeId) : null;
+  if (!run && event.runId !== null) return;
+
+  if (run && event.type === "loss_spike") {
     if (choiceKey === "stabilize") {
       game.cash -= 500000;
       run.riskModifier -= 0.13;
@@ -1323,13 +2020,13 @@ function applyEventChoice(game: GameState, event: PendingEvent, choiceKey: strin
     }
   }
 
-  if (event.type === "data_glitch") {
+  if (run && event.type === "data_glitch") {
     if (choiceKey === "clean") {
       game.cash -= 250000;
-      run.totalMonths += 1;
+      addRunWeeks(run, WEEKS_PER_MONTH);
       run.riskModifier -= 0.05;
       game.trust = clamp(game.trust + 1, 10, 99);
-      addNotification(game, `${run.name}: data cleanup added a month but protected the run.`, "warning");
+      addNotification(game, `${run.name}: data cleanup added four weeks but protected the run.`, "warning");
     } else {
       run.capabilityModifier += 4;
       run.riskModifier += 0.07;
@@ -1339,11 +2036,11 @@ function applyEventChoice(game: GameState, event: PendingEvent, choiceKey: strin
     }
   }
 
-  if (event.type === "burst_window") {
+  if (run && event.type === "burst_window") {
     if (choiceKey === "burst") {
       game.cash -= 350000;
       run.capabilityModifier += 3;
-      run.totalMonths = Math.max(2, run.totalMonths - 1);
+      addRunWeeks(run, -WEEKS_PER_MONTH);
       run.computeNeed += 4;
       addNotification(game, `${run.name}: burst capacity shaved time off the schedule.`, "good");
     } else {
@@ -1351,10 +2048,60 @@ function applyEventChoice(game: GameState, event: PendingEvent, choiceKey: strin
       addNotification(game, `${run.name}: the team stayed disciplined and kept burn under control.`, "info");
     }
   }
+
+  if (run && employee && event.type === "talent_poach") {
+    if (choiceKey === "retain") {
+      const retentionCost = Math.round(employee.salary * 0.2);
+      game.cash -= retentionCost;
+      employee.loyalty = clamp(employee.loyalty + 16, 0, 100);
+      employee.poachRisk = clamp(employee.poachRisk - 12, 0, 100);
+      run.riskModifier -= 0.03;
+      addNotification(game, `${employee.name} stayed after a ${money(retentionCost)} retention package.`, "good");
+    } else {
+      employee.active = false;
+      employee.status = "departed";
+      employee.assignedRunId = null;
+      run.assignedResearcherIds = run.assignedResearcherIds.filter((id) => id !== employee.id);
+      run.capabilityModifier -= employee.specialty === "reasoning" ? 6 : 4;
+      run.riskModifier += 0.06;
+      game.departments[employee.departmentId].morale = clamp(game.departments[employee.departmentId].morale - 6, 20, 95);
+      addNotification(game, `${employee.name} left for a rival and ${run.name} lost momentum.`, "bad");
+    }
+  }
+
+  if (run && employee && event.type === "talent_breakthrough") {
+    employee.burnout = clamp(employee.burnout + 4, 0, 100);
+    if (choiceKey === "push_breakthrough") {
+      run.capabilityModifier += employee.specialty === "reasoning" ? 7 : 5;
+      run.riskModifier += 0.04;
+      addNotification(game, `${employee.name}'s breakthrough was pushed directly into ${run.name}.`, "good");
+    } else {
+      run.capabilityModifier += 3;
+      run.trustModifier += 3;
+      employee.loyalty = clamp(employee.loyalty + 6, 0, 100);
+      addNotification(game, `${employee.name}'s breakthrough was incorporated carefully and the team stayed stable.`, "good");
+    }
+  }
+
+  if (run && employee && event.type === "talent_burnout") {
+    if (choiceKey === "give_relief") {
+      employee.burnout = clamp(employee.burnout - 18, 0, 100);
+      employee.loyalty = clamp(employee.loyalty + 5, 0, 100);
+      addRunWeeks(run, Math.ceil(WEEKS_PER_MONTH / 2));
+      addNotification(game, `${employee.name} got relief time. ${run.name} slowed slightly, but the team stabilized.`, "warning");
+    } else {
+      employee.burnout = clamp(employee.burnout + 14, 0, 100);
+      employee.poachRisk = clamp(employee.poachRisk + 8, 0, 100);
+      run.riskModifier += 0.05;
+      addNotification(game, `${employee.name} was pushed harder and burnout risk climbed on ${run.name}.`, "bad");
+    }
+  }
+
+  refreshDepartmentLeads(game);
 }
 
-export function settleGlobalMarket(game: GameState, servingPressure: number) {
-  settleGlobalMarketSystem(game, servingPressure);
+export function settleGlobalMarket(game: GameState, servingPressure: number, cadence: "week" | "month" = "month") {
+  settleGlobalMarketSystem(game, servingPressure, cadence);
 }
 
 export function calculateFundingOffer(game: GameState, monthlyRevenue: number) {
@@ -1405,10 +2152,70 @@ export function calculateFundingOffer(game: GameState, monthlyRevenue: number) {
   };
 }
 
+function replenishHiringMarket(game: GameState, count = 6) {
+  game.hiringMarket = createHiringCandidates(`${game.archetype}:week-${getCompatibleWeek(game)}:${game.nextId}`, count).map((candidate) => ({
+    ...candidate,
+    id: game.nextId++,
+  }));
+}
+
 export function hire(game: GameState, role: RoleId, count: number = 1) {
   const next = copyGame(game);
   next.headcount[role] += count;
   addNotification(next, `Hired ${count} ${ROLE_LABELS[role]}. Monthly burn increased.`, "info");
+  return next;
+}
+
+export function fire(game: GameState, role: RoleId, count: number = 1) {
+  const next = copyGame(game);
+  const actualCount = Math.min(next.headcount[role], Math.max(1, Math.round(count)));
+  if (actualCount <= 0) return game;
+  next.headcount[role] -= actualCount;
+  const severance = Math.round(SALARIES[role] * actualCount * 1.5);
+  next.cash -= severance;
+  addNotification(next, `Laid off ${actualCount} ${ROLE_LABELS[role]} for ${money(severance)} in severance.`, "warning");
+  return next;
+}
+
+export function hireCandidate(game: GameState, candidateId: number) {
+  const next = copyGame(game);
+  const candidateIndex = next.hiringMarket.findIndex((candidate) => candidate.id === candidateId);
+  if (candidateIndex < 0) return game;
+  const candidate = next.hiringMarket[candidateIndex];
+  if (next.cash < candidate.signingCost) return game;
+  next.cash -= candidate.signingCost;
+  next.employees.push({
+    ...candidate,
+    active: true,
+    status: "active",
+    assignedRunId: null,
+  });
+  next.hiringMarket.splice(candidateIndex, 1);
+  refreshDepartmentLeads(next);
+  addNotification(next, `Hired ${candidate.name} (${candidate.title}) into ${DEPARTMENT_LABELS[candidate.departmentId]} for ${money(candidate.signingCost)} upfront.`, "good");
+  return next;
+}
+
+export function fireEmployee(game: GameState, employeeId: number) {
+  const next = copyGame(game);
+  const employee = next.employees.find((entry) => entry.id === employeeId && entry.active);
+  if (!employee) return game;
+  const severance = Math.round(employee.salary * 0.25);
+  next.cash -= severance;
+  employee.active = false;
+  employee.status = "departed";
+  if (employee.assignedRunId) {
+    const run = next.activeRuns.find((entry) => entry.id === employee.assignedRunId);
+    if (run) {
+      run.assignedResearcherIds = run.assignedResearcherIds.filter((id) => id !== employee.id);
+      run.capabilityModifier -= 3;
+      run.riskModifier += 0.04;
+    }
+  }
+  employee.assignedRunId = null;
+  next.trainingConfig.assignedResearcherIds = next.trainingConfig.assignedResearcherIds.filter((id) => id !== employeeId);
+  refreshDepartmentLeads(next);
+  addNotification(next, `Fired ${employee.name} (${employee.title}) with ${money(severance)} severance.`, "warning");
   return next;
 }
 
@@ -1590,6 +2397,9 @@ export function shutdownRun(game: GameState, runId: number) {
   const run = next.activeRuns.find((entry) => entry.id === runId);
   if (!run) return game;
 
+  next.employees.forEach((employee) => {
+    if (employee.assignedRunId === runId) employee.assignedRunId = null;
+  });
   next.activeRuns = next.activeRuns.filter((entry) => entry.id !== runId);
   if (next.pendingEvent?.runId === runId) {
     next.pendingEvent = null;
@@ -1683,6 +2493,10 @@ export function updateTrainingConfig(game: GameState, patch: Partial<TrainingCon
     getContextWindowLimit(contextBase, next.trainingConfig.targetMemorySize, memoryBase),
   );
   next.trainingConfig.computeNeed = clamp(next.trainingConfig.computeNeed, size.minCompute, size.maxCompute);
+  next.trainingConfig.assignedResearcherIds = next.trainingConfig.assignedResearcherIds.filter((employeeId) => {
+    const employee = next.employees.find((entry) => entry.id === employeeId);
+    return Boolean(employee && employee.active && employee.departmentId === "research" && (employee.assignedRunId === null || employee.assignedRunId === next.pendingEvent?.runId));
+  });
   return next;
 }
 
@@ -1710,6 +2524,8 @@ export function attachModelToProduct(game: GameState, productKey: ProductTypeId,
     product.computeCost = 0;
     product.acquisition = 0;
     product.churn = 0;
+    product.traffic = createEmptyProductTraffic();
+    product.serving = createEmptyProductServing();
     addNotification(next, `${PRODUCT_TYPES[productKey].name} was taken offline.`, "warning");
     return next;
   }
@@ -1728,6 +2544,8 @@ export function attachModelToProduct(game: GameState, productKey: ProductTypeId,
       product.computeCost = 0;
       product.acquisition = 0;
       product.churn = 0;
+      product.traffic = createEmptyProductTraffic();
+      product.serving = createEmptyProductServing();
       addNotification(next, `${PRODUCT_TYPES[productKey].name} no longer has any active models.`, "warning");
     } else {
       product.activeUsers = Math.round(product.activeUsers * 0.94);
@@ -1739,7 +2557,7 @@ export function attachModelToProduct(game: GameState, productKey: ProductTypeId,
   product.modelIds = [...product.modelIds, numericModelId];
   product.modelPrices[String(numericModelId)] = product.modelPrices[String(numericModelId)] ?? product.price;
   product.activeUsers = product.activeUsers > 0 ? Math.round(product.activeUsers * 0.97) : product.activeUsers;
-  product.lastLaunchMonth = next.turn;
+  product.lastLaunchMonth = getMonthIndexFromWeek(getCompatibleWeek(next));
   addNotification(next, `${PRODUCT_TYPES[productKey].name} added model #${modelId} to its active lineup.`, "good");
   return next;
 }
@@ -1790,6 +2608,12 @@ export function updateProductPrice(game: GameState, productKey: ProductTypeId, p
   return next;
 }
 
+export function updateProductServingStrategy(game: GameState, productKey: ProductTypeId, strategy: ProductState["servingStrategy"]) {
+  const next = copyGame(game);
+  next.products[productKey].servingStrategy = strategy;
+  return next;
+}
+
 export function updateReservedPods(game: GameState, delta: number) {
   const next = copyGame(game);
   next.cloud.reservedPods = clamp(next.cloud.reservedPods + delta, 20, 220);
@@ -1807,21 +2631,23 @@ export function buildDatacenter(game: GameState, pods: number, quantity = 1) {
   next.cash -= totalBuildCost;
   for (let index = 0; index < normalizedQuantity; index += 1) {
     const datacenterId = next.cloud.nextDatacenterId;
-    next.cloud.datacenters.push({
+    next.cloud.plannedDatacenters.push({
       id: datacenterId,
       name: `Datacenter ${datacenterId}`,
       pods: normalizedPods,
       buildCost,
-      monthBuilt: next.turn,
+      weekOrdered: getCompatibleWeek(next),
+      weeksRemaining: DATACENTER_PROVISIONING_WEEKS,
+      monthOrdered: getCompatibleMonthIndex(next),
+      monthsRemaining: DATACENTER_PROVISIONING_MONTHS,
     });
     next.cloud.nextDatacenterId += 1;
   }
-  next.cloud.reservedPods += normalizedPods * normalizedQuantity;
   addNotification(
     next,
     normalizedQuantity === 1
-      ? `Built Datacenter ${next.cloud.nextDatacenterId - 1} with ${normalizedPods} cloud pods for ${money(buildCost)}.`
-      : `Built ${normalizedQuantity} datacenters with ${normalizedPods} cloud pods each for ${money(totalBuildCost)}.`,
+      ? `Ordered Datacenter ${next.cloud.nextDatacenterId - 1} with ${normalizedPods} pods for ${money(buildCost)}. Delivery in ${DATACENTER_PROVISIONING_WEEKS} weeks.`
+      : `Ordered ${normalizedQuantity} datacenters with ${normalizedPods} pods each for ${money(totalBuildCost)}. Delivery in ${DATACENTER_PROVISIONING_WEEKS} weeks.`,
     "good",
   );
   return next;
@@ -1833,7 +2659,7 @@ export function sellDatacenters(game: GameState, pods: number, quantity = 1, pri
   const normalizedPrice = Math.max(0, Math.round(pricePerDatacenter));
   const matchingDatacenters = game.cloud.datacenters
     .filter((datacenter) => datacenter.pods === normalizedPods)
-    .sort((left, right) => left.monthBuilt - right.monthBuilt || left.id - right.id);
+    .sort((left, right) => getModelBuiltWeek(left) - getModelBuiltWeek(right) || left.id - right.id);
   const sellCount = Math.min(normalizedQuantity, matchingDatacenters.length);
   if (sellCount <= 0) return game;
 
@@ -1875,7 +2701,7 @@ export function chooseBoardDirective(game: GameState, directiveId: BoardDirectiv
   const next = copyGame(game);
   const previousDirective = next.currentDirective;
   next.currentDirective = directiveId;
-  next.directiveTurnsRemaining = 3;
+  syncDirectiveWeeks(next, WEEKS_PER_QUARTER);
   next.pendingBoardReview = null;
   addNotification(
     next,
@@ -1892,7 +2718,8 @@ export function raiseFunding(game: GameState) {
   if (!next.funding.available) return game;
   next.cash += next.funding.offer;
   next.totalDilution += next.funding.dilution;
-  next.funding.lastRaisedTurn = next.turn;
+  next.funding.lastRaisedWeek = getCompatibleWeek(next);
+  next.funding.lastRaisedTurn = getCompatibleMonthIndex(next);
   addNotification(
     next,
     `Raised ${money(next.funding.offer)} at ${pct(next.funding.dilution)} dilution. Total dilution is now ${pct(next.totalDilution)}.`,
@@ -1931,8 +2758,9 @@ function processRivals(game: GameState) {
         type: "pricing_pressure",
         source: rivalId,
         title: "Pricing Pressure",
-        description: "Bundling and aggressive discounting make premium pricing harder for 3 turns.",
-        turnsRemaining: 3,
+        description: "Bundling and aggressive discounting make premium pricing harder for roughly one quarter.",
+        weeksRemaining: WEEKS_PER_QUARTER,
+        turnsRemaining: Math.ceil(WEEKS_PER_QUARTER / WEEKS_PER_MONTH),
         intensity: 0.28,
       });
       addNotification(game, "Platform giant is compressing prices across both channels.", "warning");
@@ -1947,109 +2775,54 @@ function processRivals(game: GameState) {
         source: rivalId,
         title: "Commoditization",
         description: "Near-peer open models weaken pricing power and shave a bit off funding prestige.",
-        turnsRemaining: 3,
+        weeksRemaining: WEEKS_PER_QUARTER,
+        turnsRemaining: Math.ceil(WEEKS_PER_QUARTER / WEEKS_PER_MONTH),
         intensity: 0.24,
       });
       addNotification(game, "Open-model rival released a cheap near-peer and the market noticed.", "warning");
     }
 
-    rival.cooldown = Math.max(2, nextRivalCooldown(rivalId) - 1);
+    rival.cooldown = nextRivalCooldown(rivalId);
   });
 
   return { boardPressureDelta, trustPenalty };
 }
 
-export function advanceMonth(game: GameState) {
-  if (game.status !== "playing" || game.pendingEvent) {
-    return game;
-  }
-
-  const next = copyGame(game);
-  
-  if (isNaN(next.cash)) next.cash = 1000000;
-  if (isNaN(next.lastMonth.revenue)) next.lastMonth.revenue = 0;
-  if (isNaN(next.lastMonth.profit)) next.lastMonth.profit = 0;
-  if (isNaN(next.products.chatbot.revenue)) next.products.chatbot.revenue = 0;
-  if (isNaN(next.products.api.revenue)) next.products.api.revenue = 0;
-  next.history.revenue = next.history.revenue.map(r => isNaN(r) ? 0 : r);
-  next.history.profit = next.history.profit.map(r => isNaN(r) ? 0 : r);
-  next.history.arr = next.history.arr.map(r => isNaN(r) ? 0 : r);
-
+function advanceWeeklyTraining(next: GameState) {
   const archetype = getArchetype(next);
   const effects = getDirectiveEffects(next);
-
-  const eventRun = next.activeRuns.find(
-    (run) => !run.eventTriggered && run.monthsElapsed >= Math.max(1, Math.floor(run.totalMonths / 2) - 1),
-  );
-
-  if (eventRun && Math.random() < 0.58) {
-    eventRun.eventTriggered = true;
-    next.pendingEvent = createRunEvent(eventRun);
-    addNotification(next, `Training alert: ${eventRun.name} needs executive intervention.`, "warning");
-    return next;
-  }
-
-  const rivalImpact = processRivals(next);
-
-  let provisionalServingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
-
   const allocatedServing = (next.cloud.reservedPods * (100 - next.cloud.trainingPct)) / 100;
+  const servingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
   const servingPressure =
-    provisionalServingDemand > allocatedServing
-      ? (provisionalServingDemand - allocatedServing) / Math.max(1, provisionalServingDemand)
+    servingDemand > allocatedServing
+      ? (servingDemand - allocatedServing) / Math.max(1, servingDemand)
       : 0;
-
-  settleGlobalMarket(next, servingPressure);
-
-  let totalRevenue = next.products.chatbot.revenue + next.products.api.revenue;
-  let servingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
-  let totalUsers = next.products.chatbot.activeUsers + next.products.api.activeUsers;
-
-  updateModelPerformance(next);
-
   const trainingDemand = next.activeRuns.reduce((sum, run) => sum + run.computeNeed, 0);
   const allocatedTraining = (next.cloud.reservedPods * next.cloud.trainingPct) / 100;
   const trainingOverflow = Math.max(0, trainingDemand - allocatedTraining);
-  const servingOverflow = Math.max(0, servingDemand - allocatedServing);
-
-  // Cloud rental: only unused pods (surplus beyond both serving and training demand) can be rented.
-  const surplusPods = Math.max(0, allocatedServing - servingDemand) + Math.max(0, allocatedTraining - trainingDemand);
-  const rentalResult = settleCloudRental(next, Math.floor(surplusPods));
-  totalRevenue += rentalResult.revenue;
-  const overflowTotal = trainingOverflow + servingOverflow;
-  const reservedCost = Math.round(next.cloud.reservedPods * getReservedCostPerPod(next) * effects.reservedCostMultiplier);
-  const overflowCost = Math.round(
-    (trainingOverflow * 100000 + servingOverflow * 250000) * effects.overflowCostMultiplier,
-  );
-  const payrollCost = getPayroll(next);
-  const marketingSpend = Math.round(next.marketingBudgetMillions * 1000000);
-  const developmentCost = next.activeRuns.reduce((sum, run) => {
-    if (run.remainingDevelopmentCost <= 0) return sum;
-    const monthsRemaining = Math.max(1, Math.ceil(run.totalMonths - run.monthsElapsed));
-    const installment = Math.min(run.remainingDevelopmentCost, Math.round(run.remainingDevelopmentCost / monthsRemaining));
-    run.remainingDevelopmentCost -= installment;
-    return sum + installment;
-  }, 0);
-
-  const loanPayments = next.loans.reduce((sum, loan) => sum + loan.monthlyPayment, 0);
-  const expenses = reservedCost + overflowCost + payrollCost + marketingSpend + BASE_OPS_COST + developmentCost + loanPayments;
-  const profit = Math.round(totalRevenue - expenses);
-  next.cash += profit;
-
-  next.loans = next.loans.filter((loan) => {
-    loan.elapsed += 1;
-    return loan.elapsed < loan.term;
-  });
-
   const trainingPressure = trainingDemand > 0 ? trainingOverflow / trainingDemand : 0;
   const completedRuns = [] as GameState["models"];
   const failedRuns = [] as ActiveRun[];
 
-  next.activeRuns.forEach((run) => {
-    run.monthsElapsed += 1;
-    run.lossCurve = generateLossCurve(run.totalMonths, run.lossSeverity > 0 ? run.lossSeverity * 0.5 : 0);
+  next.activeRuns.forEach(syncRunWeekFields);
 
-    if (run.monthsElapsed < run.totalMonths) return;
+  const developmentCost = next.activeRuns.reduce((sum, run) => {
+    if (run.remainingDevelopmentCost <= 0) return sum;
+    const weeksRemaining = Math.max(1, Math.ceil(run.totalWeeks - run.weeksElapsed));
+    const installment = Math.min(run.remainingDevelopmentCost, Math.round(run.remainingDevelopmentCost / weeksRemaining));
+    run.remainingDevelopmentCost -= installment;
+    return sum + installment;
+  }, 0);
+  next.cash -= developmentCost;
+  ensureOperatingCashflowState(next);
+  next.currentMonthCashflow.developmentCost = (next.currentMonthCashflow.developmentCost ?? 0) + developmentCost;
+
+  next.activeRuns.forEach((run) => {
+    run.weeksElapsed = Math.min(run.totalWeeks, run.weeksElapsed + 1);
+    run.monthsElapsed = Number((run.weeksElapsed / WEEKS_PER_MONTH).toFixed(2));
+    run.lossCurve = generateLossCurve(run.totalWeeks, run.lossSeverity > 0 ? run.lossSeverity * 0.5 : 0);
+
+    if (run.weeksElapsed < run.totalWeeks) return;
 
     const size = MODEL_SIZES[run.sizeKey];
     const data = DATA_TIERS[run.dataTier];
@@ -2080,8 +2853,16 @@ export function advanceMonth(game: GameState) {
     const memorySteps = memoryExpansion / 8;
     const contextSteps = contextExpansion / 8;
     const goals = run.goals;
-    const dataContribution = run.trainingDataUnits * data.quality * 1.65;
-    const researcherContribution = next.headcount.researchers * 2.2;
+    const assignedResearchers = run.assignedResearcherIds
+      .map((employeeId) => getEmployeeById(next, employeeId))
+      .filter((employee): employee is EmployeeState => Boolean(employee && employee.active));
+    const specialtyCapabilityBonus = assignedResearchers.reduce((sum, researcher) => {
+      if (researcher.specialty === "reasoning" && goals.reasoning > 1) return sum + 4;
+      if (researcher.specialty === "multimodal" && goals.multimodal > 1) return sum + 4;
+      if (researcher.specialty === "agentic" && goals.agentic > 1) return sum + 3;
+      if (researcher.specialty === "data") return sum + 2;
+      return sum + 1;
+    }, 0);
     const inheritedCapabilityBase = baseModel
       ? Math.max(size.baseCapability, baseModel.capability - getGoalAverage(baseModel.goals) + 2)
       : size.baseCapability;
@@ -2096,18 +2877,19 @@ export function advanceMonth(game: GameState) {
       memoryExpansion * 0.32 +
       contextExpansion * 0.12 +
       run.trainingDataUnits * data.quality * 0.9 +
+      specialtyCapabilityBonus +
       getGoalCapabilityLiftSystem(goals);
     const capability = getCapabilityFromCurrentRating(currentCapabilityRating, goals);
     const inferenceBase = baseModel
       ? Math.max(
-        size.baseInference,
-        baseModel.inferenceCost +
-        parameterSteps * 0.18 +
-        memorySteps * 0.1 +
-        contextSteps * 0.04 -
-        getGoalIntensity(goals, "speed") * 1.2 +
-        getGoalIntensity(goals, "agentic") * 0.2,
-      )
+          size.baseInference,
+          baseModel.inferenceCost +
+            parameterSteps * 0.18 +
+            memorySteps * 0.1 +
+            contextSteps * 0.04 -
+            getGoalIntensity(goals, "speed") * 1.2 +
+            getGoalIntensity(goals, "agentic") * 0.2,
+        )
       : size.baseInference;
     const inferenceCost = Number(
       clamp(inferenceBase - next.headcount.engineers * 0.06 - next.upgrades.inference * 0.24 + rand(-0.12, 0.12), 0.45, 7).toFixed(2),
@@ -2115,18 +2897,19 @@ export function advanceMonth(game: GameState) {
     const trust = Math.round(
       clamp(
         (baseModel ? baseModel.trust : 48) +
-        data.trust +
-        next.headcount.engineers * 2 +
-        next.upgrades.training * 2 +
-        run.trustModifier +
-        (next.trust - 50) * 0.15 -
-        parameterSteps -
-        contextSteps * 0.25 +
-        run.trainingDataUnits * data.quality * 0.9 +
-        getGoalIntensity(goals, "accuracy") * 8 +
-        getGoalIntensity(goals, "reasoning") * 4 -
-        getGoalIntensity(goals, "speed") * 2.4 +
-        rand(-5, 5),
+          data.trust +
+          next.headcount.engineers * 2 +
+          next.upgrades.training * 2 +
+          run.trustModifier +
+          (next.trust - 50) * 0.15 -
+          parameterSteps -
+          contextSteps * 0.25 +
+          run.trainingDataUnits * data.quality * 0.9 +
+          getGoalIntensity(goals, "accuracy") * 8 +
+          getGoalIntensity(goals, "reasoning") * 4 -
+          getGoalIntensity(goals, "speed") * 2.4 +
+          assignedResearchers.reduce((sum, researcher) => sum + (researcher.specialty === "safety" ? 2 : 0), 0) +
+          rand(-5, 5),
         10,
         99,
       ),
@@ -2146,18 +2929,25 @@ export function advanceMonth(game: GameState) {
       contextWindow: run.targetContextWindow,
       goals: { ...run.goals },
       trainingDataUnits: run.trainingDataUnits,
-      monthBuilt: next.turn,
+      weekBuilt: getCompatibleWeek(next),
+      monthBuilt: getMonthIndexFromWeek(getCompatibleWeek(next)),
       sizeKey: run.sizeKey,
       dataTier: run.dataTier,
       subscribersByCohort: createEmptyCohortSubscriberMap(),
+      cohortTenureWeeks: createEmptyCohortSubscriberMap(),
       reliability: { ...run.reliability },
     };
     next.models.unshift(model);
     next.modelPerformance[String(model.id)] = createDefaultModelPerformance();
+    assignedResearchers.forEach((researcher) => {
+      researcher.assignedRunId = null;
+      researcher.loyalty = clamp(researcher.loyalty + 2, 0, 100);
+      researcher.burnout = clamp(researcher.burnout + 4, 0, 100);
+    });
     completedRuns.push(model);
   });
 
-  next.activeRuns = next.activeRuns.filter((run) => run.monthsElapsed < run.totalMonths);
+  next.activeRuns = next.activeRuns.filter((run) => run.weeksElapsed < run.totalWeeks && !failedRuns.includes(run));
 
   completedRuns.forEach((model) => {
     addNotification(
@@ -2168,8 +2958,282 @@ export function advanceMonth(game: GameState) {
   });
 
   failedRuns.forEach((run) => {
+    run.assignedResearcherIds.forEach((employeeId) => {
+      const employee = getEmployeeById(next, employeeId);
+      if (employee) {
+        employee.assignedRunId = null;
+        employee.burnout = clamp(employee.burnout + 8, 0, 100);
+      }
+    });
     addNotification(next, `${run.name} failed during training. Burn was spent and no model shipped.`, "bad");
   });
+
+  if (failedRuns.length > 0 || completedRuns.length > 0) {
+    next.trust = clamp(
+      next.trust - failedRuns.length * 6 + completedRuns.filter((model) => model.trust >= 70).length,
+      10,
+      99,
+    );
+    next.boardPressure = clamp(
+      next.boardPressure +
+        failedRuns.length * 5 -
+        (completedRuns.some((model) => model.capability > next.marketStandard) ? 2 : 0),
+      0,
+      100,
+    );
+  }
+
+  const talentRun = next.activeRuns.find((run) => run.assignedResearcherIds.length > 0);
+  if (talentRun && !next.pendingEvent) {
+    const assignedTalent = talentRun.assignedResearcherIds
+      .map((employeeId) => getEmployeeById(next, employeeId))
+      .filter((employee): employee is EmployeeState => Boolean(employee && employee.active));
+    const volatileTalent = assignedTalent.find((employee) => employee.poachRisk + employee.burnout > 95);
+    const breakthroughTalent = assignedTalent.find(
+      (employee) => employee.breakthroughChance > 0 && Math.random() < employee.breakthroughChance / WEEKLY_TALENT_BREAKTHROUGH_DENOMINATOR,
+    );
+    const selectedTalent = volatileTalent ?? breakthroughTalent ?? null;
+    if (selectedTalent && Math.random() < WEEKLY_TALENT_EVENT_FINAL_PROBABILITY) {
+      next.pendingEvent = createTalentEvent(talentRun, selectedTalent);
+      addNotification(next, `Talent alert: ${selectedTalent.name} has become a live issue on ${talentRun.name}.`, "warning");
+    }
+  }
+
+  next.employees.forEach((employee) => {
+    if (!employee.active) return;
+    if (employee.assignedRunId !== null) {
+      employee.burnout = clamp(employee.burnout + 0.6 + (employee.level === "lead" || employee.level === "director" ? 0.25 : 0), 0, 100);
+    } else {
+      employee.burnout = clamp(employee.burnout - 0.35, 0, 100);
+    }
+    employee.poachRisk = clamp(
+      employee.poachRisk + (employee.skill > 78 ? 0.25 : 0) - (employee.loyalty > 72 ? 0.25 : 0),
+      0,
+      100,
+    );
+  });
+
+  const eventRun = next.activeRuns.find(
+    (run) => !run.eventTriggered && run.weeksElapsed >= Math.max(1, Math.floor(run.totalWeeks / 2) - 1),
+  );
+
+  if (!next.pendingEvent && eventRun && Math.random() < WEEKLY_TRAINING_EVENT_PROBABILITY) {
+    eventRun.eventTriggered = true;
+    next.pendingEvent = createRunEvent(eventRun);
+    addNotification(next, `Training alert: ${eventRun.name} needs executive intervention.`, "warning");
+  }
+
+  return { developmentCost };
+}
+
+function advanceWeeklyTimers(next: GameState) {
+  const datacenterCapacityAdded = resolvePlannedDatacenters(next);
+  const rivalImpact = processRivals(next);
+  updateCompetitorCompanies(next);
+
+  if (rivalImpact.trustPenalty !== 0) {
+    next.trust = clamp(next.trust - rivalImpact.trustPenalty, 10, 99);
+  }
+  if (rivalImpact.boardPressureDelta !== 0) {
+    next.boardPressure = clamp(next.boardPressure + rivalImpact.boardPressureDelta, 0, 100);
+  }
+
+  next.marketModifiers = next.marketModifiers
+    .map((modifier) => {
+      const weeksRemaining = getMarketModifierWeeksRemaining(modifier) - 1;
+      return {
+        ...modifier,
+        weeksRemaining,
+        turnsRemaining: Math.ceil(Math.max(0, weeksRemaining) / WEEKS_PER_MONTH),
+      };
+    })
+    .filter((modifier) => getMarketModifierWeeksRemaining(modifier) > 0);
+
+  if (next.currentDirective) {
+    const directiveWeeksRemaining = getDirectiveWeeksRemaining(next) - 1;
+    syncDirectiveWeeks(next, directiveWeeksRemaining);
+    if (directiveWeeksRemaining <= 0) {
+      addNotification(next, `Board directive expired: ${BOARD_DIRECTIVES[next.currentDirective].name}.`, "info");
+      next.currentDirective = null;
+      syncDirectiveWeeks(next, 0);
+    }
+  } else {
+    syncDirectiveWeeks(next, 0);
+  }
+
+  return { datacenterCapacityAdded };
+}
+
+function settleWeeklyProductMarket(next: GameState) {
+  ensureProductReportingState(next);
+
+  const allocatedServing = (next.cloud.reservedPods * (100 - next.cloud.trainingPct)) / 100;
+  const provisionalServingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
+  const servingPressure =
+    provisionalServingDemand > allocatedServing
+      ? (provisionalServingDemand - allocatedServing) / Math.max(1, provisionalServingDemand)
+      : 0;
+
+  settleGlobalMarket(next, servingPressure, "week");
+
+  const products = (["chatbot", "api"] as ProductTypeId[]).reduce(
+    (snapshots, type) => {
+      const product = next.products[type];
+      const churnedUsers =
+        product.churn < 0.999
+          ? Math.max(0, product.activeUsers / Math.max(0.001, 1 - product.churn) - product.activeUsers)
+          : 0;
+      snapshots[type] = {
+        revenue: Math.round(product.revenue),
+        users: product.activeUsers,
+        acquisition: product.acquisition,
+        churnedUsers: Math.round(churnedUsers),
+        churn: product.churn,
+        tokenUsageMillions: Number(product.tokenUsageMillions.toFixed(2)),
+        computeDemand: Number(product.computeDemand.toFixed(2)),
+        computeCost: Math.round(product.computeCost),
+      };
+      return snapshots;
+    },
+    {} as Record<ProductTypeId, ProductPeriodSnapshot>,
+  );
+
+  next.lastWeek = summarizeProductSnapshot(products);
+  updateModelPerformance(next, next.lastWeek.products);
+
+  const monthToDateProducts = (["chatbot", "api"] as ProductTypeId[]).reduce(
+    (snapshots, type) => {
+      snapshots[type] = addProductPeriodSnapshot(next.currentMonthToDate.products[type] ?? createEmptyProductPeriodSnapshot(), products[type]);
+      return snapshots;
+    },
+    {} as Record<ProductTypeId, ProductPeriodSnapshot>,
+  );
+  next.currentMonthToDate = summarizeProductSnapshot(monthToDateProducts);
+}
+
+export function advanceMonth(game: GameState) {
+  if (game.status !== "playing" || game.pendingEvent) {
+    return game;
+  }
+
+  const next = copyGame(game);
+  
+  if (isNaN(next.cash)) next.cash = 1000000;
+  if (isNaN(next.lastMonth.revenue)) next.lastMonth.revenue = 0;
+  if (isNaN(next.lastMonth.profit)) next.lastMonth.profit = 0;
+  if (isNaN(next.products.chatbot.revenue)) next.products.chatbot.revenue = 0;
+  if (isNaN(next.products.api.revenue)) next.products.api.revenue = 0;
+  next.history.revenue = next.history.revenue.map(r => isNaN(r) ? 0 : r);
+  next.history.profit = next.history.profit.map(r => isNaN(r) ? 0 : r);
+  next.history.arr = next.history.arr.map(r => isNaN(r) ? 0 : r);
+  ensureProductReportingState(next);
+  ensureOperatingCashflowState(next);
+
+  const archetype = getArchetype(next);
+  const effects = getDirectiveEffects(next);
+  refreshDepartmentLeads(next);
+  if (
+    next.currentMonthCashflow.payroll === 0 &&
+    next.currentMonthCashflow.marketingSpend === 0 &&
+    next.currentMonthCashflow.baseOpsCost === 0 &&
+    next.currentMonthCashflow.loanPayments === 0 &&
+    next.currentMonthCashflow.computeReservedCost === 0 &&
+    next.currentMonthCashflow.cloudRentalRevenue === 0 &&
+    (next.currentMonthCashflow.developmentCost ?? 0) === 0
+  ) {
+    const loanPayments = next.loans.reduce((sum, loan) => sum + Math.round(loan.monthlyPayment), 0);
+    next.currentMonthCashflow = {
+      payroll: getPayroll(next),
+      marketingSpend: Math.round(next.marketingBudgetMillions * 1000000),
+      baseOpsCost: BASE_OPS_COST,
+      loanPayments,
+      computeReservedCost: Math.round(next.cloud.reservedPods * getReservedCostPerPod(next) * effects.reservedCostMultiplier),
+      cloudRentalRevenue: 0,
+      cloudRentalPodsRented: 0,
+      developmentCost: 0,
+    };
+    next.cash -= next.currentMonthCashflow.payroll + next.currentMonthCashflow.marketingSpend + next.currentMonthCashflow.baseOpsCost + next.currentMonthCashflow.loanPayments + next.currentMonthCashflow.computeReservedCost;
+    next.loans = next.loans.filter((loan) => {
+      loan.elapsed += 1;
+      loan.elapsedWeeks = (loan.elapsedWeeks ?? (loan.elapsed - 1) * WEEKS_PER_MONTH) + WEEKS_PER_MONTH;
+      loan.termWeeks = getLoanTermWeeks(loan);
+      loan.weeklyPayment = loan.weeklyPayment ?? loan.monthlyPayment / WEEKS_PER_MONTH;
+      return loan.elapsed < loan.term;
+    });
+  }
+
+  const rivalImpact = { boardPressureDelta: 0, trustPenalty: 0 };
+  const datacenterCapacityAdded = 0;
+
+  let provisionalServingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
+
+  const allocatedServing = (next.cloud.reservedPods * (100 - next.cloud.trainingPct)) / 100;
+  const servingPressure =
+    provisionalServingDemand > allocatedServing
+      ? (provisionalServingDemand - allocatedServing) / Math.max(1, provisionalServingDemand)
+      : 0;
+
+  const productMonthToDate = next.currentMonthToDate;
+  let totalRevenue = productMonthToDate.revenue;
+  let servingDemand = next.products.chatbot.computeDemand + next.products.api.computeDemand;
+  let totalUsers = next.products.chatbot.activeUsers + next.products.api.activeUsers;
+
+  updateModelPerformance(next, productMonthToDate.products, { rollupMonth: true });
+
+  const trainingDemand = next.activeRuns.reduce((sum, run) => sum + run.computeNeed, 0);
+  const allocatedTraining = (next.cloud.reservedPods * next.cloud.trainingPct) / 100;
+  const trainingOverflow = Math.max(0, trainingDemand - allocatedTraining);
+  const burstCloudCapacity = getBurstCloudCapacity(next, allocatedServing);
+  const servingShortfall = Math.max(0, servingDemand - allocatedServing);
+  const burstCloudPodsUsed = Math.min(servingShortfall, burstCloudCapacity);
+  const servingOverflow = Math.max(0, servingShortfall - burstCloudPodsUsed);
+  const burstCloudCost = Math.round(burstCloudPodsUsed * BURST_CLOUD_COST_PER_POD);
+
+  const computeDemandTotal = Math.max(0.0001, next.products.chatbot.computeDemand + next.products.api.computeDemand);
+  (["chatbot", "api"] as ProductTypeId[]).forEach((type) => {
+    const product = next.products[type];
+    const demandShare = product.computeDemand / computeDemandTotal;
+    const productBurstPods = Number((burstCloudPodsUsed * demandShare).toFixed(2));
+    const productOverflowPods = Number((servingOverflow * demandShare).toFixed(2));
+    const productBurstCost = Math.round(burstCloudCost * demandShare);
+    const capacityPressure = Number(
+      clamp(
+        (product.computeDemand - allocatedServing * demandShare) / Math.max(1, product.computeDemand),
+        0,
+        1.5,
+      ).toFixed(3),
+    );
+
+    product.serving = {
+      ...product.serving,
+      burstPodsUsed: productBurstPods,
+      burstCost: productBurstCost,
+      overflowPods: productOverflowPods,
+      capacityPressure,
+    };
+    product.computeCost = Math.round(product.computeCost + productBurstCost);
+  });
+
+  const overflowTotal = trainingOverflow + servingOverflow;
+  const overflowCost = Math.round(
+    (trainingOverflow * 100000 + servingOverflow * 250000) * effects.overflowCostMultiplier,
+  );
+  const reservedCost = next.currentMonthCashflow.computeReservedCost;
+  const payrollCost = next.currentMonthCashflow.payroll;
+  const marketingSpend = next.currentMonthCashflow.marketingSpend;
+  const baseOpsCost = next.currentMonthCashflow.baseOpsCost;
+  const loanPayments = next.currentMonthCashflow.loanPayments;
+  totalRevenue += next.currentMonthCashflow.cloudRentalRevenue;
+  const hiringSpend = 0;
+  const severanceCost = 0;
+  const developmentCost = next.currentMonthCashflow.developmentCost ?? 0;
+
+  const expenses = reservedCost + burstCloudCost + overflowCost + payrollCost + marketingSpend + baseOpsCost + developmentCost + loanPayments;
+  const profit = Math.round(totalRevenue - expenses);
+  next.cash += Math.round(productMonthToDate.revenue - burstCloudCost - overflowCost);
+
+  const completedRuns = [] as GameState["models"];
+  const failedRuns = [] as ActiveRun[];
 
   let trustDelta = 0;
   const liveProducts = Object.values(next.products).filter((product) => product.modelIds.length > 0).length;
@@ -2180,6 +3244,7 @@ export function advanceMonth(game: GameState) {
   if (next.currentDirective === "enterprise_trust") trustDelta += 1;
   if (next.currentDirective === "growth" && overflowTotal > 0) trustDelta -= 2;
   if (overflowTotal > 0) trustDelta -= Math.min(7, Math.ceil(overflowTotal / 4));
+  if (burstCloudPodsUsed > 0) trustDelta -= Math.min(3, Math.ceil(burstCloudPodsUsed / 20));
   if (servingPressure > 0.25) trustDelta -= 3;
   trustDelta -= failedRuns.length * 6;
   trustDelta += completedRuns.filter((model) => model.trust >= 70).length;
@@ -2232,6 +3297,7 @@ export function advanceMonth(game: GameState) {
 
   if (profit < 0) boardPressureDelta += 3;
   else boardPressureDelta -= 2;
+  if (burstCloudCost > 0) boardPressureDelta += Math.min(5, Math.ceil(burstCloudCost / 300000));
 
   if (next.trust < 45) boardPressureDelta += 3;
   else if (next.trust > 65) boardPressureDelta -= 2;
@@ -2250,14 +3316,24 @@ export function advanceMonth(game: GameState) {
     users: totalUsers,
     payroll: payrollCost,
     marketingSpend,
+    baseOpsCost,
+    loanPayments,
     computeReservedCost: reservedCost,
+    burstCloudCost,
     overflowCost,
     servingDemand: Number(servingDemand.toFixed(2)),
     trainingDemand: Number(trainingDemand.toFixed(2)),
+    burstCloudPodsUsed: Number(burstCloudPodsUsed.toFixed(2)),
+    datacenterCapacityAdded,
+    datacenterCapacityPending: next.cloud.plannedDatacenters.reduce((sum, datacenter) => sum + datacenter.pods, 0),
     trustDelta,
     distributionDelta: { consumer: consumerDelta, enterprise: enterpriseDelta },
-    cloudRentalRevenue: rentalResult.revenue,
-    cloudRentalPodsRented: rentalResult.podsRented,
+    cloudRentalRevenue: next.currentMonthCashflow.cloudRentalRevenue,
+    cloudRentalPodsRented: Math.round(next.currentMonthCashflow.cloudRentalPodsRented / WEEKS_PER_MONTH),
+    developmentCost,
+    hiringSpend,
+    severanceCost,
+    products: productMonthToDate.products,
   };
 
   next.history.revenue.push(Math.round(totalRevenue));
@@ -2270,22 +3346,14 @@ export function advanceMonth(game: GameState) {
   next.history.trust = next.history.trust.slice(-24);
   next.history.boardPressure.push(next.boardPressure);
   next.history.boardPressure = next.history.boardPressure.slice(-24);
+  next.currentMonthToDate = createEmptyProductReportingSnapshot();
+  next.currentMonthCashflow = createEmptyOperatingCashflowSnapshot();
 
-  next.marketModifiers = next.marketModifiers
-    .map((modifier) => ({ ...modifier, turnsRemaining: modifier.turnsRemaining - 1 }))
-    .filter((modifier) => modifier.turnsRemaining > 0);
-
-  if (next.currentDirective) {
-    next.directiveTurnsRemaining -= 1;
-    if (next.directiveTurnsRemaining <= 0) {
-      addNotification(next, `Board directive expired: ${BOARD_DIRECTIVES[next.currentDirective].name}.`, "info");
-      next.currentDirective = null;
-      next.directiveTurnsRemaining = 0;
-    }
-  }
+  const settledWeek = getCompatibleWeek(next);
+  const settledMonthIndex = getMonthIndexFromWeek(settledWeek);
 
   // Yearly Cohort Scaling
-  if (next.turn > 0 && next.turn % 12 === 0) {
+  if (settledMonthIndex > 0 && settledMonthIndex % 12 === 0) {
     let shifted = false;
     Object.values(next.globalCohorts).forEach((cohort) => {
       // 10% chance to shrink, otherwise grow 1-3%
@@ -2304,11 +3372,15 @@ export function advanceMonth(game: GameState) {
     }
   }
 
-  updateCompetitorCompanies(next);
-  next.competitorLaunchShock = Number((next.competitorLaunchShock * 0.55).toFixed(4));
-  next.turn += 1;
+  if (settledMonthIndex === 1 || next.hiringMarket.length < 3 || settledMonthIndex % 4 === 0) {
+    replenishHiringMarket(next);
+  }
 
-  if (next.turn - next.funding.lastRaisedTurn >= 12 && !next.funding.available) {
+  next.competitorLaunchShock = Number((next.competitorLaunchShock * 0.55).toFixed(4));
+  next.turn = settledMonthIndex + 1;
+
+  const lastRaisedWeek = next.funding.lastRaisedWeek ?? (next.funding.lastRaisedTurn && next.funding.lastRaisedTurn > 0 ? legacyMonthToWeek(next.funding.lastRaisedTurn) : 0);
+  if (settledWeek - lastRaisedWeek >= 12 * WEEKS_PER_MONTH && !next.funding.available) {
     const offer = calculateFundingOffer(next, totalRevenue);
     next.funding.available = true;
     next.funding.offer = offer.offer;
@@ -2330,12 +3402,76 @@ export function advanceMonth(game: GameState) {
     next.deficitMonths = 0;
   }
 
-  if (next.status === "playing" && (next.turn - 1) % 3 === 0) {
+  if (next.status === "playing" && settledMonthIndex % 3 === 0) {
     next.pendingBoardReview = createPendingBoardReview(next);
     addNotification(next, `Quarter ${next.pendingBoardReview.quarter} board memo updated. Review it in Strategy when needed.`, "info");
   }
 
   return next;
+}
+
+export function advanceWeek(game: GameState) {
+  if (game.status !== "playing" || game.pendingEvent) {
+    return game;
+  }
+
+  const currentWeek = getCompatibleWeek(game);
+
+  if (isMonthEndWeek(currentWeek)) {
+    const monthEndInput = {
+      ...copyGame(game),
+      week: currentWeek,
+    };
+    settleWeeklyProductMarket(monthEndInput);
+    settleWeeklyOperatingCashflow(monthEndInput, currentWeek);
+    const monthEndNext = advanceMonth(monthEndInput);
+
+    if (monthEndNext === monthEndInput || monthEndNext.turn === monthEndInput.turn) {
+      return {
+        ...monthEndNext,
+        week: currentWeek,
+      };
+    }
+
+    const timerResult = advanceWeeklyTimers(monthEndNext);
+    const trainingResult = advanceWeeklyTraining(monthEndNext);
+    monthEndNext.lastMonth.datacenterCapacityAdded += timerResult.datacenterCapacityAdded;
+    if (trainingResult.developmentCost > 0) {
+      monthEndNext.lastMonth.developmentCost = (monthEndNext.lastMonth.developmentCost ?? 0) + trainingResult.developmentCost;
+      monthEndNext.lastMonth.expenses += trainingResult.developmentCost;
+      monthEndNext.lastMonth.profit -= trainingResult.developmentCost;
+      const lastProfitIndex = monthEndNext.history.profit.length - 1;
+      if (lastProfitIndex >= 0) {
+        monthEndNext.history.profit[lastProfitIndex] = monthEndNext.lastMonth.profit;
+      }
+    }
+
+    const lastTrustIndex = monthEndNext.history.trust.length - 1;
+    if (lastTrustIndex >= 0) {
+      monthEndNext.history.trust[lastTrustIndex] = monthEndNext.trust;
+    }
+    const lastBoardIndex = monthEndNext.history.boardPressure.length - 1;
+    if (lastBoardIndex >= 0) {
+      monthEndNext.history.boardPressure[lastBoardIndex] = monthEndNext.boardPressure;
+    }
+
+    return {
+      ...monthEndNext,
+      week: currentWeek + 1,
+    };
+  }
+
+  const weeklyNext = copyGame(game);
+  weeklyNext.week = currentWeek;
+  settleWeeklyProductMarket(weeklyNext);
+  settleWeeklyOperatingCashflow(weeklyNext, currentWeek);
+  advanceWeeklyTimers(weeklyNext);
+  advanceWeeklyTraining(weeklyNext);
+
+  return {
+    ...weeklyNext,
+    week: currentWeek + 1,
+  };
 }
 
 export function takeLoan(game: GameState, principal: number, term: number): GameState {
@@ -2347,8 +3483,11 @@ export function takeLoan(game: GameState, principal: number, term: number): Game
     principal,
     term,
     elapsed: 0,
+    termWeeks: terms.termWeeks,
+    elapsedWeeks: 0,
     interestFeePct: terms.feePct,
     monthlyPayment: terms.monthlyPayment,
+    weeklyPayment: terms.weeklyPayment,
   };
 
   next.loans.push(newLoan);

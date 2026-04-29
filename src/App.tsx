@@ -4,7 +4,7 @@ import { ARCHETYPES, BOARD_DIRECTIVES } from "./game/defs";
 import {
   addAdminCapital,
   addCompetitorCapital,
-  advanceMonth,
+  advanceWeek,
   attachModelToProduct,
   buildDatacenter,
   buyData,
@@ -17,8 +17,9 @@ import {
   getPayroll,
   getProjectedServingDemand,
   getRunwayMonths,
+  isMonthEndWeek,
   money,
-  monthLabel,
+  monthLabelFromWeek,
   raiseFunding,
   resolvePendingEvent,
   shutdownRun,
@@ -30,15 +31,20 @@ import {
   updateCohortDef,
   updateGoalEconomics,
   updateProductPrice,
+  updateProductServingStrategy,
   updateSubscriptionPlan,
   createSubscriptionPlan,
   deleteSubscriptionPlan,
+  fire,
+  fireEmployee,
   updateCloudRentalPrice,
   updateTrainingAllocation,
   updateTrainingConfig,
   hire,
+  hireCandidate,
   launchRun,
   takeLoan,
+  WEEKS_PER_MONTH,
 } from "./game/sim";
 import { AppState, ArchetypeId, BoardDirectiveId, DataTierId, RoleId, ScreenId, UpgradeId, SubscriptionPlan } from "./game/types";
 import { AppShell, Badge, Button, KpiCard, NavTab } from "./components/ui";
@@ -107,41 +113,61 @@ export default function AICompanyTycoonStep2() {
   const archetype = ARCHETYPES[game.archetype];
   const currentDirective = game.currentDirective ? BOARD_DIRECTIVES[game.currentDirective] : null;
   const advanceDisabled = Boolean(game.pendingEvent) || game.status !== "playing";
+  const currentWeek = typeof game.week === "number" && Number.isFinite(game.week) ? game.week : (game.turn - 1) * WEEKS_PER_MONTH + 1;
+  const weeksUntilMonthEnd = WEEKS_PER_MONTH - (currentWeek % WEEKS_PER_MONTH);
+  const currentMonth = monthLabelFromWeek(currentWeek);
+  const monthEndTiming = isMonthEndWeek(currentWeek)
+    ? "Month-end settlement this week"
+    : `Month-end in ${weeksUntilMonthEnd} week${weeksUntilMonthEnd === 1 ? "" : "s"}`;
+  const cadenceSummary = isMonthEndWeek(currentWeek)
+    ? "Advance Week settles weekly cash, products, training, and builds, then closes the monthly report."
+    : "Advance Week settles weekly cash, products, training, and builds; monthly reports close at month-end.";
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-[1600px] px-4 py-5 md:px-6 md:py-6">
-        <div className="sticky top-0 z-30 -mx-4 border-b border-slate-800/70 bg-slate-950/88 px-4 py-3 backdrop-blur md:-mx-6 md:px-6">
-        <div className="rounded-[28px] border border-slate-800 bg-slate-900/55 p-5 shadow-[0_18px_45px_rgba(2,6,23,0.35)]">
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-            <div className="max-w-3xl">
-              <div className="text-[11px] uppercase tracking-[0.28em] text-cyan-300">AI Company Tycoon</div>
-              <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-50 md:text-4xl">Executive Command</div>
-              <div className="mt-3 text-sm leading-6 text-slate-400">
-                Monthly operations still matter, but Step 2 adds identity, trust, channel distribution,
-                rival archetypes, and quarterly board pressure to the loop.
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Badge tone="default">{archetype.name}</Badge>
+      <div className="mx-auto max-w-[1600px] px-4 md:px-6">
+        {/* Spreadsheet header */}
+        <div className="sticky top-0 z-30 -mx-4 border-b border-[#21262d] bg-[#0d1117]/96 backdrop-blur-sm md:-mx-6">
+
+          {/* Brand & context strip */}
+          <div className="flex items-center justify-between gap-4 border-b border-[#161b22] px-4 py-2 md:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="shrink-0 text-[11px] font-bold uppercase tracking-[0.2em] text-[#58a6ff]">AI Tycoon</span>
+              <span className="shrink-0 text-[#30363d]">│</span>
+              <span className="truncate text-sm font-semibold text-[#c9d1d9]">{archetype.name}</span>
+              <div className="hidden items-center gap-2 sm:flex">
                 <Badge tone={currentDirective ? "good" : "default"}>
-                  {currentDirective ? `Directive / ${currentDirective.name}` : "No active directive"}
+                  {currentDirective ? currentDirective.name : "No directive"}
                 </Badge>
-                <Badge tone="warning">{monthLabel(game.turn)}</Badge>
               </div>
             </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3">
-                <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Date</div>
-                <div className="mt-1 font-mono text-xl font-semibold text-slate-50">{monthLabel(game.turn)}</div>
+            <div className="flex shrink-0 items-center gap-3">
+              <div className="text-right">
+                <div className="font-mono text-sm text-[#8b949e]">Week {currentWeek} / {currentMonth}</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#58a6ff]">{monthEndTiming}</div>
               </div>
-              <Button onClick={() => updateGame(advanceMonth)} disabled={advanceDisabled} className="min-w-[160px]">
-                Advance Month
+              <Button onClick={() => updateGame(advanceWeek)} disabled={advanceDisabled}>
+                Advance Week
               </Button>
             </div>
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-2">
+          {/* KPI row — spreadsheet frozen header cells */}
+          <div className="grid grid-cols-3 border-b border-[#21262d] lg:grid-cols-6">
+            <KpiCard label="Cash" value={money(game.cash)} tone={game.cash > 12000000 ? "good" : game.cash > 5000000 ? "warning" : "bad"} />
+            <KpiCard label="ARR" value={money(arr)} tone={arr >= 10000000 ? "good" : "default"} />
+            <KpiCard label="Completed Month Profit" value={money(game.lastMonth.profit)} tone={game.lastMonth.profit > 0 ? "good" : game.lastMonth.profit < -500000 ? "bad" : "warning"} />
+            <KpiCard label="Runway" value={runwayMonths === Infinity ? "∞" : `${runwayMonths.toFixed(1)} mo`} subvalue={`Payroll/mo ${money(payroll)}`} tone={runwayMonths === Infinity ? "good" : runwayMonths > 10 ? "warning" : "bad"} />
+            <KpiCard label="Trust" value={game.trust.toFixed(1)} subvalue={`Board ${game.boardPressure.toFixed(1)}`} tone={game.trust >= 60 ? "good" : game.trust >= 45 ? "warning" : "bad"} />
+            <KpiCard label="Headcount" value={headcountTotal} subvalue={`Std ${game.marketStandard}`} tone="default" />
+          </div>
+
+          <div className="border-b border-[#21262d] px-4 py-2 text-xs text-[#8b949e] md:px-6">
+            {cadenceSummary}
+          </div>
+
+          {/* Sheet tab navigation */}
+          <div className="flex overflow-x-auto px-4 md:px-6">
             {(["overview", "strategy", "lab", "compute", "market", "bank", "admin"] as ScreenId[]).map((screen) => (
               <NavTab key={screen} active={app.screen === screen} onClick={() => setScreen(screen)}>
                 {screen === "overview"
@@ -151,28 +177,18 @@ export default function AICompanyTycoonStep2() {
                     : screen === "lab"
                     ? "Lab"
                     : screen === "compute"
-                    ? "Cloud Capacity"
+                    ? "Cloud"
                     : screen === "market"
-                      ? "Global Market"
+                      ? "Market"
                       : screen === "bank"
-                        ? "Capital Bank"
-                        : "Admin Tools"}
+                        ? "Bank"
+                        : "Admin"}
               </NavTab>
             ))}
           </div>
-
-          <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-6">
-            <KpiCard label="Cash" value={money(game.cash)} tone={game.cash > 12000000 ? "good" : game.cash > 5000000 ? "warning" : "bad"} />
-            <KpiCard label="ARR" value={money(arr)} tone={arr >= 10000000 ? "good" : "default"} />
-            <KpiCard label="Monthly Profit" value={money(game.lastMonth.profit)} tone={game.lastMonth.profit > 0 ? "good" : game.lastMonth.profit < -500000 ? "bad" : "warning"} />
-            <KpiCard label="Runway" value={runwayMonths === Infinity ? "Infinity" : `${runwayMonths.toFixed(1)} mo`} subvalue={`Payroll ${money(payroll)}`} tone={runwayMonths === Infinity ? "good" : runwayMonths > 10 ? "warning" : "bad"} />
-            <KpiCard label="Trust" value={game.trust.toFixed(1)} subvalue={`Board ${game.boardPressure.toFixed(1)}`} tone={game.trust >= 60 ? "good" : game.trust >= 45 ? "warning" : "bad"} />
-            <KpiCard label="Headcount" value={headcountTotal} subvalue={`Market Std ${game.marketStandard}`} tone="default" />
-          </div>
-        </div>
         </div>
 
-        <div className="mt-6">
+        <div className="py-5">
           {app.screen === "overview" ? (
             <OverviewScreen
               game={game}
@@ -180,6 +196,9 @@ export default function AICompanyTycoonStep2() {
               onAttachModel={(productKey, modelId) => updateGame((current) => attachModelToProduct(current, productKey, modelId))}
               onUpdateProductPrice={(productKey, value, modelId) =>
                 updateGame((current) => updateProductPrice(current, productKey, value, modelId))
+              }
+              onUpdateProductServingStrategy={(productKey, strategy) =>
+                updateGame((current) => updateProductServingStrategy(current, productKey, strategy))
               }
               onUpdateSubscriptionPlan={(planId, patch) => updateGame((current) => updateSubscriptionPlan(current, planId, patch))}
               onCreateSubscriptionPlan={() => updateGame(createSubscriptionPlan)}
@@ -194,6 +213,8 @@ export default function AICompanyTycoonStep2() {
               game={game}
               onUpdateMarketingBudget={(value) => updateGame((current) => updateMarketingBudget(current, value))}
               onChooseBoardDirective={(directiveId) => updateGame((current) => chooseBoardDirective(current, directiveId))}
+              onHireCandidate={(candidateId) => updateGame((current) => hireCandidate(current, candidateId))}
+              onFireEmployee={(employeeId) => updateGame((current) => fireEmployee(current, employeeId))}
             />
           ) : null}
 
@@ -202,6 +223,9 @@ export default function AICompanyTycoonStep2() {
               game={game}
               preview={preview}
               onHire={(role: RoleId, count: number) => updateGame((current) => hire(current, role, count))}
+              onFire={(role: RoleId, count: number) => updateGame((current) => fire(current, role, count))}
+              onHireCandidate={(candidateId) => updateGame((current) => hireCandidate(current, candidateId))}
+              onFireEmployee={(employeeId) => updateGame((current) => fireEmployee(current, employeeId))}
               onTrainEngineers={() => updateGame(trainEngineers)}
               onBuyData={(tier, pack) => updateGame((current) => buyData(current, tier, pack))}
               onBuyUpgrade={(key: UpgradeId) => updateGame((current) => buyUpgrade(current, key))}
@@ -256,41 +280,49 @@ export default function AICompanyTycoonStep2() {
       </div>
 
       {game.pendingEvent ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 px-4 py-6 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-[28px] border border-amber-500/20 bg-slate-900 p-6 shadow-2xl shadow-black/40">
-            <div className="text-[11px] uppercase tracking-[0.24em] text-amber-300">Training Event</div>
-            <div className="mt-2 text-3xl font-semibold text-slate-50">{game.pendingEvent.title}</div>
-            <div className="mt-3 text-slate-300">{game.pendingEvent.body}</div>
-            <div className="mt-6 grid gap-3">
-              {game.pendingEvent.choices.map((choice) => (
-                <button
-                  key={choice.key}
-                  onClick={() => updateGame((current) => resolvePendingEvent(current, choice.key))}
-                  className="rounded-2xl border border-slate-700 bg-slate-950/80 p-4 text-left transition hover:border-cyan-400/30 hover:bg-slate-950"
-                >
-                  <div className="text-lg font-semibold text-slate-50">{choice.label}</div>
-                  <div className="mt-1 text-sm text-slate-400">{choice.effect}</div>
-                </button>
-              ))}
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#0d1117]/85 px-4 py-6 backdrop-blur-sm">
+          <div className="w-full max-w-2xl overflow-hidden rounded-md border border-[#d29922]/30 bg-[#161b22] shadow-2xl shadow-black/60">
+            <div className="border-b border-[#30363d] bg-[#1f1a0d] px-5 py-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d29922]">Training Event</span>
+            </div>
+            <div className="p-5">
+              <div className="text-xl font-semibold text-[#e6edf3]">{game.pendingEvent.title}</div>
+              <div className="mt-2 text-sm leading-6 text-[#8b949e]">{game.pendingEvent.body}</div>
+              <div className="mt-5 grid gap-2">
+                {game.pendingEvent.choices.map((choice) => (
+                  <button
+                    key={choice.key}
+                    onClick={() => updateGame((current) => resolvePendingEvent(current, choice.key))}
+                    className="rounded border border-[#30363d] bg-[#0d1117] p-4 text-left transition-colors hover:border-[#58a6ff]/40 hover:bg-[#161b22]"
+                  >
+                    <div className="text-sm font-semibold text-[#e6edf3]">{choice.label}</div>
+                    <div className="mt-0.5 text-xs text-[#8b949e]">{choice.effect}</div>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       ) : null}
 
       {game.status !== "playing" ? (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/90 px-4 py-6 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-[28px] border border-slate-700 bg-slate-900 p-6 text-center shadow-2xl shadow-black/40">
-            <div className="text-[11px] uppercase tracking-[0.24em] text-cyan-300">Company Failed</div>
-            <div className="mt-3 text-4xl font-semibold text-slate-50">The Company Lost Control</div>
-            <div className="mt-3 text-slate-300">
-              Cash, trust, or market pressure broke the company before the economics stabilized.
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0d1117]/90 px-4 py-6 backdrop-blur-sm">
+          <div className="w-full max-w-xl overflow-hidden rounded-md border border-[#f85149]/30 bg-[#161b22] shadow-2xl shadow-black/60">
+            <div className="border-b border-[#30363d] bg-[#220d0d] px-5 py-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#f85149]">Company Failed</span>
             </div>
-            <div className="mt-6 grid grid-cols-2 gap-3">
-              <KpiCard label="Final ARR" value={money(game.lastMonth.revenue * 12)} />
-              <KpiCard label="Final Cash" value={money(game.cash)} tone={game.cash > 0 ? "good" : "bad"} />
-            </div>
-            <div className="mt-6 flex justify-center">
-              <Button onClick={restartToSelection}>Return To Archetypes</Button>
+            <div className="p-5 text-center">
+              <div className="text-2xl font-semibold text-[#e6edf3]">The Company Lost Control</div>
+              <div className="mt-2 text-sm text-[#8b949e]">
+                Cash, trust, or market pressure broke the company before the economics stabilized.
+              </div>
+              <div className="mt-5 grid grid-cols-2 border border-[#21262d]">
+                <KpiCard label="Final ARR" value={money(game.lastMonth.revenue * 12)} />
+                <KpiCard label="Final Cash" value={money(game.cash)} tone={game.cash > 0 ? "good" : "bad"} />
+              </div>
+              <div className="mt-5 flex justify-center">
+                <Button onClick={restartToSelection}>Return to Archetypes</Button>
+              </div>
             </div>
           </div>
         </div>

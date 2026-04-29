@@ -1,9 +1,16 @@
 import React, { useState } from "react";
 
 import { MODEL_GOALS, PRODUCT_TYPES } from "../game/defs";
-import { formatVersion, getMarketComparison, getModelById, money, monthLabel, pct, formatPods, formatBigParams, formatBigMemory, formatBigContext } from "../game/sim";
-import { CohortId, GameState, ProductTypeId, SubscriptionPlan } from "../game/types";
+import { WEEKS_PER_MONTH, formatVersion, getMarketComparison, getModelById, money, monthLabelFromWeek, pct, formatPods, formatBigParams, formatBigMemory, formatBigContext } from "../game/sim";
+import { CohortId, GameState, ProductTypeId, ServingStrategyId, SubscriptionPlan } from "../game/types";
 import { Badge, Button, EmptyState, MiniSparkline, Panel, SegmentedControl, StatRow, Tone } from "../components/ui";
+
+const TH = "px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6e7681] whitespace-nowrap";
+const TD = "px-3 py-2.5 align-top text-sm text-[#e6edf3]";
+const TR = "border-t border-[#21262d]";
+const FIELD_ROW = "flex items-center justify-between gap-4 border-b border-[#161b22] py-2.5 last:border-0";
+const INPUT_CLS = "w-full rounded border border-[#30363d] bg-[#161b22] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff]";
+const SECTION_LABEL = "mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6e7681]";
 
 function getTrendPoints(points: number[], current: number) {
   return points.length ? points : [current, current];
@@ -22,7 +29,7 @@ function getMoneyTrend(points: number[]) {
     const pctDelta = (delta / Math.abs(previous)) * 100;
     if (Number.isFinite(pctDelta) && Math.abs(pctDelta) < 1000) {
       return {
-        label: `${pctDelta >= 0 ? "+" : ""}${pctDelta.toFixed(0)}% MoM`,
+        label: `${pctDelta >= 0 ? "+" : ""}${pctDelta.toFixed(0)}% vs prior completed month`,
         tone: (delta > 0 ? "good" : delta < 0 ? "bad" : "default") as Tone,
       };
     }
@@ -51,6 +58,188 @@ function getDirectionalTrend(points: number[], inverse = false) {
   };
 }
 
+const SERVING_STRATEGY_OPTIONS: { key: ServingStrategyId; label: string }[] = [
+  { key: "flagship", label: "Flagship" },
+  { key: "tiered", label: "Tiered" },
+  { key: "cached", label: "Cached" },
+  { key: "enterprise_sla", label: "Enterprise SLA" },
+];
+
+function getServingStrategyLabel(strategy: ServingStrategyId) {
+  return SERVING_STRATEGY_OPTIONS.find((option) => option.key === strategy)?.label ?? strategy;
+}
+
+function getComputeDemandChangeLabel(product: GameState["products"][ProductTypeId]) {
+  const baseline = product.traffic?.baselineTokensMillions ?? 0;
+  const served = product.tokenUsageMillions ?? 0;
+  const multiplier = product.traffic?.burstMultiplier ?? 1;
+  if (baseline <= 0 || served <= 0) return "Demand is waiting on an active lineup.";
+
+  const delta = served - baseline;
+  if (Math.abs(delta) < 0.05) {
+    return `Traffic is tracking baseline demand at ${baseline.toFixed(1)}M tokens.`;
+  }
+
+  const direction = delta > 0 ? "above" : "below";
+  return `${served.toFixed(1)}M tokens last week, ${Math.abs(delta).toFixed(1)}M ${direction} baseline (${multiplier.toFixed(2)}x burst).`;
+}
+
+function getCostDriverLabel(product: GameState["products"][ProductTypeId]) {
+  const contextPenalty = product.serving?.contextPenalty ?? 1;
+  const batchingEfficiency = product.serving?.batchingEfficiency ?? 1;
+  const pressure = product.serving?.capacityPressure ?? 0;
+
+  if (pressure >= 0.35) return "Capacity pressure is the main cost driver right now.";
+  if (contextPenalty >= 1.45) return "Long context load is dragging serving efficiency.";
+  if (batchingEfficiency <= 0.9) return "Weak batching efficiency is making each pod less productive.";
+  if ((product.traffic?.burstMultiplier ?? 1) >= 1.2) return "Burst demand is inflating serving cost ahead of capacity.";
+  return "Serving cost is mostly being driven by normal model weight and baseline traffic.";
+}
+
+type LooseRecord = Record<string, unknown>;
+
+function isLooseRecord(value: unknown): value is LooseRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getPathValue(source: unknown, path: readonly string[]) {
+  let current: unknown = source;
+
+  for (const key of path) {
+    if (!isLooseRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+
+  return current;
+}
+
+function readFirstValue(sources: unknown[], paths: ReadonlyArray<readonly string[]>) {
+  for (const source of sources) {
+    for (const path of paths) {
+      const value = getPathValue(source, path);
+      if (value !== undefined && value !== null) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readNumberValue(sources: unknown[], paths: ReadonlyArray<readonly string[]>) {
+  const value = readFirstValue(sources, paths);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function readTextValue(sources: unknown[], paths: ReadonlyArray<readonly string[]>) {
+  const value = readFirstValue(sources, paths);
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  return null;
+}
+
+function toTextList(value: unknown): string[] {
+  if (!value) {
+    return [];
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/\r?\n|[;|]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => {
+      if (typeof entry === "string") {
+        return entry.trim() ? [entry.trim()] : [];
+      }
+      if (isLooseRecord(entry)) {
+        const nested = entry.label ?? entry.reason ?? entry.text ?? entry.name;
+        return typeof nested === "string" && nested.trim() ? [nested.trim()] : [];
+      }
+      return [];
+    });
+  }
+  return [];
+}
+
+function collectTextValues(sources: unknown[], paths: ReadonlyArray<readonly string[]>) {
+  const values: string[] = [];
+
+  for (const source of sources) {
+    for (const path of paths) {
+      values.push(...toTextList(getPathValue(source, path)));
+    }
+  }
+
+  return Array.from(new Set(values));
+}
+
+function formatSurfaceLabel(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatPercentValue(value: number, digits = 0) {
+  const percentValue = Math.abs(value) <= 1.5 ? value * 100 : value;
+  return `${percentValue.toFixed(digits)}%`;
+}
+
+function formatSignedPercentValue(value: number, digits = 0) {
+  const percentValue = Math.abs(value) <= 1.5 ? value * 100 : value;
+  return `${percentValue >= 0 ? "+" : ""}${percentValue.toFixed(digits)}%`;
+}
+
+function formatMultiplier(value: number) {
+  return `${value.toFixed(value >= 10 ? 0 : 2)}x`;
+}
+
+function formatSurfaceNumber(value: number) {
+  if (Math.abs(value) >= 100) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+  if (Math.abs(value) >= 10) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function getProductSnapshot(lastMonth: unknown, productKey: ProductTypeId) {
+  const paths: Array<readonly string[]> = [
+    ["productEconomics", productKey],
+    ["channelEconomics", productKey],
+    ["productSurface", productKey],
+    ["productBreakdown", productKey],
+    ["channels", productKey],
+    ["products", productKey],
+    [productKey],
+  ];
+
+  for (const path of paths) {
+    const value = getPathValue(lastMonth, path);
+    if (isLooseRecord(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
 function CompanyMetric({
   label,
   value,
@@ -65,20 +254,20 @@ function CompanyMetric({
   points: number[];
 }) {
   return (
-    <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/70">
+    <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-slate-300">{label}</div>
-          <div className="mt-2 font-mono text-3xl font-semibold tracking-tight text-slate-50">{value}</div>
+          <div className="text-sm font-medium text-[#c9d1d9]">{label}</div>
+          <div className="mt-2 font-mono text-xl font-semibold tracking-tight text-[#e6edf3]">{value}</div>
           <div
             className={`mt-2 text-xs ${
               deltaTone === "good"
-                ? "text-emerald-300"
+                ? "text-[#3fb950]"
                 : deltaTone === "bad"
-                  ? "text-rose-300"
+                  ? "text-[#f85149]"
                   : deltaTone === "warning"
-                    ? "text-amber-300"
-                    : "text-slate-500"
+                    ? "text-[#d29922]"
+                    : "text-[#484f58]"
             }`}
           >
             {deltaLabel}
@@ -86,6 +275,38 @@ function CompanyMetric({
         </div>
         <MiniSparkline points={points} tone={deltaTone} className="shrink-0" />
       </div>
+    </div>
+  );
+}
+
+function SurfaceMetricCard({
+  label,
+  value,
+  tone = "default",
+  helper,
+}: {
+  label: string;
+  value: string;
+  tone?: Tone;
+  helper?: string;
+}) {
+  return (
+    <div className="rounded-md bg-[#161b22] p-4 border border-[#30363d]">
+      <div className="text-xs font-medium uppercase tracking-[0.18em] text-[#484f58]">{label}</div>
+      <div
+        className={`mt-2 font-mono text-xl font-semibold ${
+          tone === "good"
+            ? "text-[#3fb950]"
+            : tone === "bad"
+              ? "text-[#f85149]"
+              : tone === "warning"
+                ? "text-[#d29922]"
+                : "text-[#e6edf3]"
+        }`}
+      >
+        {value}
+      </div>
+      {helper ? <div className="mt-1 text-xs text-[#484f58]">{helper}</div> : null}
     </div>
   );
 }
@@ -122,10 +343,10 @@ function ProductModelCard({
   onPriceChange?: (value: string) => void;
 }) {
   return (
-    <div className="rounded-2xl bg-slate-900/80 p-4 ring-1 ring-inset ring-slate-800/60">
+    <div className="rounded-md bg-[#161b22] p-4 border border-[#30363d]">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <div className="text-base font-semibold text-slate-100">
+          <div className="text-base font-semibold text-[#e6edf3]">
             {name} v{formatVersion(version)}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -133,7 +354,7 @@ function ProductModelCard({
             <Badge tone="default">Capability {capability}</Badge>
             <Badge tone={marketTone}>{marketLabel}</Badge>
           </div>
-          <div className="mt-2 text-xs text-slate-500">
+          <div className="mt-2 text-xs text-[#484f58]">
             {formatBigMemory(memorySize)} / {formatBigParams(parameterScale)} params / {formatBigContext(contextWindow)} ctx
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -147,13 +368,13 @@ function ProductModelCard({
 
         {onPriceChange ? (
           <label className="text-xs sm:w-32">
-            <div className="mb-1 text-slate-500">Price ({priceUnitLabel})</div>
+            <div className="mb-1 text-[#484f58]">Price ({priceUnitLabel})</div>
             <input
               type="number"
               step={step}
               value={priceValue}
               onChange={(event) => onPriceChange(event.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
+              className="w-full rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff]"
             />
           </label>
         ) : null}
@@ -165,6 +386,7 @@ function ProductModelCard({
 type ReleasedModelRow = {
   id: number;
   name: string;
+  releaseWeek: number;
   releaseMonth: number;
   developmentCost: number;
   totalRevenueGenerated: number;
@@ -188,6 +410,7 @@ function getReleasedModelRows(game: GameState): ReleasedModelRow[] {
     return {
       id: model.id,
       name: model.name,
+      releaseWeek: model.weekBuilt ?? (model.monthBuilt - 1) * WEEKS_PER_MONTH + 1,
       releaseMonth: model.monthBuilt,
       developmentCost: model.developmentCost,
       totalRevenueGenerated: performance.totalRevenue,
@@ -205,6 +428,7 @@ export function OverviewScreen({
   arr,
   onAttachModel,
   onUpdateProductPrice,
+  onUpdateProductServingStrategy,
   onUpdateSubscriptionPlan,
   onCreateSubscriptionPlan,
   onDeleteSubscriptionPlan,
@@ -215,6 +439,7 @@ export function OverviewScreen({
   arr: number;
   onAttachModel: (productKey: ProductTypeId, modelId: string) => void;
   onUpdateProductPrice: (productKey: ProductTypeId, value: string, modelId?: string) => void;
+  onUpdateProductServingStrategy: (productKey: ProductTypeId, strategy: ServingStrategyId) => void;
   onUpdateSubscriptionPlan: (planId: string, patch: Partial<SubscriptionPlan>) => void;
   onCreateSubscriptionPlan: () => void;
   onDeleteSubscriptionPlan: (planId: string) => void;
@@ -224,7 +449,9 @@ export function OverviewScreen({
   const [activeProduct, setActiveProduct] = useState<ProductTypeId>("chatbot");
   const [activeView, setActiveView] = useState<"dashboard" | "models">("dashboard");
   const [expandedModelKey, setExpandedModelKey] = useState<number | null>(null);
-  const monthsUntilFunding = Math.max(0, 12 - (game.turn - game.funding.lastRaisedTurn));
+  const currentWeek = typeof game.week === "number" && Number.isFinite(game.week) ? game.week : (game.turn - 1) * WEEKS_PER_MONTH + 1;
+  const lastRaisedWeek = game.funding.lastRaisedWeek ?? ((game.funding.lastRaisedTurn ?? 0) > 0 ? ((game.funding.lastRaisedTurn ?? 0) - 1) * WEEKS_PER_MONTH + 1 : 0);
+  const monthsUntilFunding = Math.max(0, Math.ceil((12 * WEEKS_PER_MONTH - (currentWeek - lastRaisedWeek)) / WEEKS_PER_MONTH));
   const product = game.products[activeProduct];
   const productDef = PRODUCT_TYPES[activeProduct];
   const attachedModels = product.modelIds
@@ -242,9 +469,257 @@ export function OverviewScreen({
     ? getMarketComparison(Math.max(...game.models.map((model) => model.capability)), game.marketStandard)
     : null;
   const releasedModels = getReleasedModelRows(game);
+  const productRecord = product as LooseRecord;
+  const productSnapshot = getProductSnapshot(game.lastMonth, activeProduct);
+  const productSources: unknown[] = [
+    productRecord,
+    getPathValue(productRecord, ["traffic"]),
+    productSnapshot,
+    getPathValue(productSnapshot, ["traffic"]),
+    getPathValue(productSnapshot, ["serving"]),
+    getPathValue(productSnapshot, ["economics"]),
+    getPathValue(productSnapshot, ["surface"]),
+  ];
+  const lastMonthProductSources: unknown[] = [
+    game.lastMonth,
+    productSnapshot,
+  ];
+  const servingPosture = readTextValue(productSources, [
+    ["servingStrategy"],
+    ["servingPosture"],
+    ["routingStrategy"],
+    ["routingPosture"],
+    ["posture"],
+  ]);
+  const servingPostureLabel = servingPosture ? formatSurfaceLabel(servingPosture) : null;
+  const burstMultiplier = readNumberValue(productSources, [
+    ["trafficSpikeMultiplier"],
+    ["burstMultiplier"],
+    ["demandSpikeMultiplier"],
+    ["spikeMultiplier"],
+    ["peakMultiplier"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["trafficSpikeMultiplier", activeProduct],
+    ["trafficSpikeMultipliers", activeProduct],
+    ["burstMultiplier", activeProduct],
+    ["burstMultipliers", activeProduct],
+  ]);
+  const trafficSpikePctRaw = readNumberValue(productSources, [
+    ["trafficSpikePct"],
+    ["trafficSpikePercent"],
+    ["burstPct"],
+    ["trafficBurstPct"],
+    ["demandSpikePct"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["trafficSpikePct", activeProduct],
+    ["trafficSpikePercent", activeProduct],
+    ["trafficSpikePcts", activeProduct],
+  ]);
+  const trafficSpikePct = trafficSpikePctRaw ?? (burstMultiplier !== null ? (burstMultiplier - 1) * 100 : null);
+  const effectiveThroughput = readNumberValue(productSources, [
+    ["effectiveThroughput"],
+    ["effectiveTokensPerPod"],
+    ["effectiveTokensMillionPerPod"],
+    ["throughputPerPod"],
+    ["tokensPerPod"],
+    ["tokensPerPodMillions"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["effectiveThroughput", activeProduct],
+    ["effectiveTokensPerPod", activeProduct],
+  ]);
+  const contextUtilization = readNumberValue(productSources, [
+    ["averageContextUtilization"],
+    ["contextUtilization"],
+    ["averageContextLoad"],
+    ["contextLoad"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["averageContextUtilization", activeProduct],
+    ["contextUtilization", activeProduct],
+  ]);
+  const batchingEfficiency = readNumberValue(productSources, [
+    ["batchingFriendliness"],
+    ["batchingEfficiency"],
+    ["batchEfficiency"],
+    ["batchingScore"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["batchingEfficiency", activeProduct],
+    ["batchingFriendliness", activeProduct],
+  ]);
+  const viralPressure = readNumberValue(productSources, [
+    ["viralPressure"],
+    ["viralityPressure"],
+    ["demandPressure"],
+    ["trafficPressure"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["viralPressure", activeProduct],
+    ["viralityPressure", activeProduct],
+  ]);
+  const baselineTokens = readNumberValue(productSources, [
+    ["baselineTokensMillions"],
+    ["trafficBaselineTokensMillions"],
+    ["baselineDemandMillions"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["baselineTokensMillions", activeProduct],
+    ["trafficBaselineTokensMillions", activeProduct],
+  ]);
+  const grossMarginField = readNumberValue(productSources, [
+    ["grossMarginPct"],
+    ["grossMarginPercent"],
+    ["grossMargin"],
+    ["marginPct"],
+    ["marginPercent"],
+    ["margin"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["grossMarginPct", activeProduct],
+    ["grossMargin", activeProduct],
+  ]);
+  const grossMarginPct = grossMarginField !== null
+    ? (Math.abs(grossMarginField) <= 1.5 ? grossMarginField * 100 : grossMarginField)
+    : product.revenue > 0
+      ? ((product.revenue - product.computeCost) / product.revenue) * 100
+      : null;
+  const computeDemandDelta = readNumberValue(productSources, [
+    ["computeDemandDelta"],
+    ["computeDemandChange"],
+    ["servingDemandDelta"],
+    ["demandChange"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["computeDemandDelta", activeProduct],
+    ["computeDemandChange", activeProduct],
+    ["servingDemandDelta", activeProduct],
+  ]);
+  const computeDemandChangePctField = readNumberValue(productSources, [
+    ["computeDemandChangePct"],
+    ["computeDemandDeltaPct"],
+    ["servingDemandChangePct"],
+    ["demandChangePct"],
+  ]) ?? readNumberValue(lastMonthProductSources, [
+    ["computeDemandChangePct", activeProduct],
+    ["computeDemandDeltaPct", activeProduct],
+    ["servingDemandChangePct", activeProduct],
+  ]);
+  const computeDemandChangePct = computeDemandChangePctField !== null
+    ? (Math.abs(computeDemandChangePctField) <= 1.5 ? computeDemandChangePctField * 100 : computeDemandChangePctField)
+    : null;
+  const explicitCostDrivers = collectTextValues(productSources, [
+    ["costDrivers"],
+    ["computeCostDrivers"],
+    ["servingCostDrivers"],
+    ["inferenceCostDrivers"],
+  ]);
+  const scopedCostDrivers = collectTextValues(lastMonthProductSources, [
+    ["costDrivers", activeProduct],
+    ["computeCostDrivers", activeProduct],
+    ["servingCostDrivers", activeProduct],
+    ["inferenceCostDrivers", activeProduct],
+  ]);
+  const explicitDemandDrivers = collectTextValues(productSources, [
+    ["computeDemandDrivers"],
+    ["computeDemandReasons"],
+    ["demandDrivers"],
+    ["demandChangeReasons"],
+    ["whyComputeDemandChanged"],
+    ["trafficDrivers"],
+  ]);
+  const scopedDemandDrivers = collectTextValues(lastMonthProductSources, [
+    ["computeDemandDrivers", activeProduct],
+    ["computeDemandReasons", activeProduct],
+    ["demandChangeReasons", activeProduct],
+    ["whyComputeDemandChanged", activeProduct],
+    ["trafficDrivers", activeProduct],
+  ]);
+  const fallbackCostDrivers = [
+    contextUtilization !== null && (Math.abs(contextUtilization) <= 1 ? contextUtilization * 100 : contextUtilization) >= 70
+      ? "High context utilization is stretching serving weight."
+      : null,
+    batchingEfficiency !== null && (Math.abs(batchingEfficiency) <= 1 ? batchingEfficiency * 100 : batchingEfficiency) < 45
+      ? "Weak batching efficiency is dragging throughput."
+      : null,
+    product.revenue > 0 && product.computeCost / product.revenue >= 0.6
+      ? "Serving cost is absorbing an unusually large share of channel revenue."
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  const fallbackDemandDrivers = [
+    trafficSpikePct !== null && trafficSpikePct >= 5
+      ? `Traffic spiked ${formatSignedPercentValue(trafficSpikePct, 0)} versus the prior baseline.`
+      : null,
+    computeDemandChangePct !== null && Math.abs(computeDemandChangePct) >= 5
+      ? `Compute demand moved ${formatSignedPercentValue(computeDemandChangePct, 0)} versus the prior weekly run rate.`
+      : null,
+    activeProduct === "api" && baselineTokens !== null
+      ? `Baseline API load is running near ${formatSurfaceNumber(baselineTokens)}M tokens before burst traffic.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  const costDrivers = Array.from(new Set([...explicitCostDrivers, ...scopedCostDrivers])).slice(0, 3);
+  const demandDrivers = Array.from(new Set([...explicitDemandDrivers, ...scopedDemandDrivers])).slice(0, 3);
+  const displayedCostDrivers = (costDrivers.length ? costDrivers : fallbackCostDrivers).slice(0, 3);
+  const displayedDemandDrivers = (demandDrivers.length ? demandDrivers : fallbackDemandDrivers).slice(0, 3);
+  const inferenceSurfaceMetrics = [
+    grossMarginPct !== null
+      ? {
+          label: "Gross Margin",
+          value: formatPercentValue(grossMarginPct, 0),
+          tone: (grossMarginPct >= 55 ? "good" : grossMarginPct >= 25 ? "warning" : "bad") as Tone,
+          helper: product.revenue > 0 ? `${money(product.revenue - product.computeCost)} after serving` : undefined,
+        }
+      : null,
+    trafficSpikePct !== null
+      ? {
+          label: "Traffic Spike",
+          value: formatSignedPercentValue(trafficSpikePct, 0),
+          tone: (trafficSpikePct >= 20 ? "warning" : trafficSpikePct > 0 ? "default" : "good") as Tone,
+          helper: burstMultiplier !== null ? `${formatMultiplier(burstMultiplier)} burst vs baseline` : undefined,
+        }
+      : null,
+    effectiveThroughput !== null
+      ? {
+          label: "Effective Throughput",
+          value: formatSurfaceNumber(effectiveThroughput),
+          tone: "default" as Tone,
+          helper: "Observed serving efficiency",
+        }
+      : null,
+    contextUtilization !== null
+      ? {
+          label: "Context Load",
+          value: formatPercentValue(contextUtilization, 0),
+          tone: ((Math.abs(contextUtilization) <= 1 ? contextUtilization * 100 : contextUtilization) >= 75 ? "warning" : "default") as Tone,
+          helper: "Average context utilization",
+        }
+      : null,
+    batchingEfficiency !== null
+      ? {
+          label: "Batching",
+          value: formatPercentValue(batchingEfficiency, 0),
+          tone: ((Math.abs(batchingEfficiency) <= 1 ? batchingEfficiency * 100 : batchingEfficiency) >= 65 ? "good" : (Math.abs(batchingEfficiency) <= 1 ? batchingEfficiency * 100 : batchingEfficiency) >= 40 ? "default" : "warning") as Tone,
+          helper: "Serving friendliness",
+        }
+      : null,
+    viralPressure !== null
+      ? {
+          label: "Demand Pressure",
+          value: formatPercentValue(viralPressure, 0),
+          tone: ((Math.abs(viralPressure) <= 1 ? viralPressure * 100 : viralPressure) >= 70 ? "warning" : "default") as Tone,
+          helper: "Growth-driven compute stress",
+        }
+      : null,
+    computeDemandChangePct !== null
+      ? {
+          label: "Demand Change",
+          value: formatSignedPercentValue(computeDemandChangePct, 0),
+          tone: (computeDemandChangePct >= 15 ? "warning" : computeDemandChangePct <= -10 ? "good" : "default") as Tone,
+          helper: computeDemandDelta !== null ? `${formatSurfaceNumber(computeDemandDelta)} pod delta` : undefined,
+        }
+      : null,
+  ].filter((metric): metric is { label: string; value: string; tone: Tone; helper?: string } => Boolean(metric));
+  const trafficSpikeBadgeLabel = trafficSpikePct !== null && Math.abs(trafficSpikePct) >= 5
+    ? `${trafficSpikePct >= 0 ? "+" : ""}${Math.round(trafficSpikePct)}% traffic`
+    : burstMultiplier !== null && Math.abs(burstMultiplier - 1) >= 0.05
+      ? `${formatMultiplier(burstMultiplier)} burst`
+      : null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <SegmentedControl
         options={[
           { key: "dashboard", label: "Overview" },
@@ -255,11 +730,11 @@ export function OverviewScreen({
       />
 
       {activeView === "dashboard" ? (
-        <div className="grid gap-6 xl:grid-cols-[1.52fr_0.82fr]">
-      <div className="space-y-6">
+        <div className="grid gap-5 xl:grid-cols-[1.52fr_0.82fr]">
+      <div className="space-y-5">
         <Panel
           title="Product Portfolio"
-          subtitle="Focus on one business line at a time, tune deployment pricing, and shape the lineup that actually wins its market."
+          subtitle="Product users, revenue, cost, acquisition, and churn update every week."
           right={<Badge tone={arr >= 10000000 ? "good" : "default"}>ARR {money(arr)}</Badge>}
         >
           <div className="space-y-5">
@@ -272,61 +747,63 @@ export function OverviewScreen({
               onChange={(key) => setActiveProduct(key)}
             />
 
-            <div className="rounded-[24px] bg-slate-950/45 p-5 ring-1 ring-inset ring-slate-800/75">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <div className="text-xl font-semibold text-slate-50">{productDef.name}</div>
-                  <div className="mt-1 text-sm text-slate-400">
-                    {attachedModels.length
-                      ? `${attachedModels.length} active model${attachedModels.length === 1 ? "" : "s"} shaping this line.`
-                      : "No active lineup yet. Attach a model to bring this business online."}
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Badge tone={attachedModels.length ? "default" : "warning"}>
-                      {productDef.unitLabel}: {activeProduct === "api" ? product.activeUsers.toFixed(1) : product.activeUsers.toLocaleString()}
-                    </Badge>
-                    <Badge tone={attachedModels.length ? lineupComparison.tone : "default"}>
-                      {attachedModels.length ? lineupComparison.label : "No market comparison yet"}
-                    </Badge>
-                    {attachedModels.length ? <Badge tone="default">Avg Capability {averageCapability}</Badge> : null}
-                  </div>
-                </div>
-
-                <div className={`grid min-w-[240px] gap-3 sm:grid-cols-2 ${activeProduct === "api" ? "lg:w-[420px]" : "lg:w-[320px]"}`}>
-                  <div className="rounded-2xl bg-slate-900/75 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Revenue</div>
-                    <div className="mt-2 font-mono text-2xl font-semibold text-slate-50">{money(product.revenue)}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-900/75 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Compute</div>
-                    <div className="mt-2 font-mono text-2xl font-semibold text-slate-50">{formatPods(product.computeDemand)} pods</div>
-                  </div>
-                  {activeProduct === "api" ? (
-                    <div className="rounded-2xl bg-slate-900/75 p-4 ring-1 ring-inset ring-slate-800/60">
-                      <div className="text-sm font-medium text-slate-300">Token Usage</div>
-                      <div className="mt-2 font-mono text-2xl font-semibold text-slate-50">
-                        {product.tokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 2 })}M
-                      </div>
-                    </div>
-                  ) : null}
-                  <div className="rounded-2xl bg-slate-900/75 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Acquisition</div>
-                    <div className="mt-2 font-mono text-2xl font-semibold text-slate-50">
-                      {activeProduct === "api" ? product.acquisition.toFixed(1) : product.acquisition.toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-900/75 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Churn</div>
-                    <div className="mt-2 font-mono text-2xl font-semibold text-slate-50">{pct(product.churn)}</div>
-                  </div>
-                </div>
+            <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
+              <div className="overflow-hidden rounded-md border border-[#30363d]">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-[#161b22]">
+                      <th className={TH}>Product Line</th>
+                      <th className={TH}>Users</th>
+                      <th className={TH}>Market</th>
+                      <th className={TH}>Last Week Revenue</th>
+                      <th className={TH}>Compute</th>
+                      <th className={TH}>Throughput</th>
+                      <th className={TH}>Demand</th>
+                      <th className={TH}>Weekly Acq / Churn</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className={TR}>
+                      <td className={TD}>
+                        <div className="font-medium text-[#e6edf3]">{productDef.name}</div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          {servingPostureLabel ? <Badge tone="default">{servingPostureLabel}</Badge> : null}
+                          {trafficSpikeBadgeLabel ? <Badge tone={trafficSpikePct !== null && trafficSpikePct >= 20 ? "warning" : "default"}>{trafficSpikeBadgeLabel}</Badge> : null}
+                        </div>
+                      </td>
+                      <td className={TD + " font-mono text-[#8b949e]"}>
+                        {activeProduct === "api" ? product.activeUsers.toFixed(1) : product.activeUsers.toLocaleString()}
+                      </td>
+                      <td className={TD}>
+                        <div className="flex flex-wrap gap-1.5">
+                          <Badge tone={attachedModels.length ? lineupComparison.tone : "default"}>
+                            {attachedModels.length ? lineupComparison.label : "No comparison"}
+                          </Badge>
+                          {attachedModels.length ? <Badge tone="default">Avg Cap {averageCapability}</Badge> : null}
+                        </div>
+                      </td>
+                      <td className={TD + " font-mono text-[#3fb950]"}>{money(product.revenue)}</td>
+                      <td className={TD + " font-mono text-[#8b949e]"}>{formatPods(product.computeDemand)} pods</td>
+                      <td className={TD + " font-mono text-[#8b949e]"}>{(product.serving?.effectiveTokensPerPod ?? 0).toFixed(1)}M</td>
+                      <td className={TD + " font-mono text-[#8b949e]"}>
+                        {activeProduct === "api"
+                          ? `${product.tokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 2 })}M tokens`
+                          : `${(product.traffic?.burstMultiplier ?? 1).toFixed(2)}x burst`}
+                      </td>
+                      <td className={TD}>
+                        <div className="font-mono text-[#3fb950]">{activeProduct === "api" ? product.acquisition.toFixed(1) : product.acquisition.toLocaleString()}</div>
+                        <div className="text-xs font-mono text-[#f85149]">{pct(product.churn)}</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
 
               <div className="mt-5 grid gap-5 xl:grid-cols-[1.18fr_0.82fr]">
                 <div className="space-y-4">
                   <div>
                     <div className="mb-3 flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-slate-300">Active Lineup</div>
+                      <div className="text-sm font-medium text-[#c9d1d9]">Active Lineup</div>
                       <Button
                         onClick={() => onAttachModel(activeProduct, "")}
                         variant="ghost"
@@ -338,147 +815,202 @@ export function OverviewScreen({
                     </div>
 
                     {attachedModels.length > 0 ? (
-                      <div className="space-y-3">
-                        {attachedModels.map((model) => {
-                          const comparison = getMarketComparison(model.capability, game.marketStandard);
-                          const goals = Object.entries(model.goals).filter(([, weight]) => weight > 0).slice(0, 3) as Array<[string, number]>;
+                      <div className="overflow-x-auto rounded-md border border-[#30363d]">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-[#161b22]">
+                              <th className={TH}>Model</th>
+                              <th className={TH}>Capability</th>
+                              <th className={TH}>Market</th>
+                              <th className={TH}>Specs</th>
+                              <th className={TH}>Goals</th>
+                              <th className={TH}>Price</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {attachedModels.map((model) => {
+                              const comparison = getMarketComparison(model.capability, game.marketStandard);
+                              const goals = Object.entries(model.goals).filter(([, weight]) => weight > 0).slice(0, 3) as Array<[string, number]>;
 
-                          return (
-                            <ProductModelCard
-                              key={model.id}
-                              modelId={model.id}
-                              name={model.name}
-                              version={model.version}
-                              capability={model.capability}
-                              marketLabel={comparison.label}
-                              marketTone={comparison.tone}
-                              memorySize={model.memorySize}
-                              parameterScale={model.parameterScale}
-                              contextWindow={model.contextWindow}
-                              goals={goals}
-                              priceValue={product.modelPrices[String(model.id)] ?? product.price}
-                              priceUnitLabel={productDef.priceUnitLabel}
-                              step={productDef.step}
-                              onPriceChange={activeProduct === "api" ? (value) => onUpdateProductPrice(activeProduct, value, String(model.id)) : undefined}
-                            />
-                          );
-                        })}
+                              return (
+                                <tr key={model.id} className={TR}>
+                                  <td className={TD}>
+                                    <div className="font-medium text-[#e6edf3]">{model.name}</div>
+                                    <div className="text-xs text-[#8b949e]">#{model.id} / v{formatVersion(model.version)}</div>
+                                  </td>
+                                  <td className={TD + " font-mono text-[#3fb950]"}>{model.capability}</td>
+                                  <td className={TD}><Badge tone={comparison.tone}>{comparison.label}</Badge></td>
+                                  <td className={TD + " font-mono text-xs text-[#8b949e]"}>
+                                    {formatBigMemory(model.memorySize)} / {formatBigParams(model.parameterScale)} / {formatBigContext(model.contextWindow)}
+                                  </td>
+                                  <td className={TD}>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {goals.map(([goalId, weight]) => (
+                                        <Badge key={goalId} tone="default">
+                                          {MODEL_GOALS[goalId as keyof typeof MODEL_GOALS].name} {weight}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  </td>
+                                  <td className={TD}>
+                                    {activeProduct === "api" ? (
+                                      <input
+                                        type="number"
+                                        step={productDef.step}
+                                        value={product.modelPrices[String(model.id)] ?? product.price}
+                                        onChange={(event) => onUpdateProductPrice(activeProduct, event.target.value, String(model.id))}
+                                        className={INPUT_CLS + " w-24 text-right font-mono"}
+                                      />
+                                    ) : (
+                                      <span className="font-mono text-[#8b949e]">{money(product.modelPrices[String(model.id)] ?? product.price)}</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     ) : (
-                      <div className="rounded-2xl bg-slate-950/70 px-4 py-5 text-sm text-slate-500 ring-1 ring-inset ring-slate-800/60">
+                      <div className="rounded-md bg-[#161b22]/60 px-4 py-5 text-sm text-[#484f58] border border-[#30363d]">
                         Product is offline until at least one model is active.
                       </div>
                     )}
                   </div>
 
-                  <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Available Models</div>
+                  <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
+                    <div className="text-sm font-medium text-[#c9d1d9]">Available Models</div>
                     {game.models.length === 0 ? (
-                      <div className="mt-3 text-sm text-slate-500">Ship a model from the Lab first.</div>
+                      <div className="mt-3 text-sm text-[#484f58]">Ship a model from the Lab first.</div>
                     ) : (
-                      <div className="mt-4 grid gap-3 md:grid-cols-2">
-                        {game.models.map((option) => {
-                          const comparison = getMarketComparison(option.capability, game.marketStandard);
-                          const goals = Object.entries(option.goals).filter(([, weight]) => weight > 0).slice(0, 3) as Array<[string, number]>;
-                          const active = product.modelIds.includes(option.id);
+                      <div className="mt-3 overflow-x-auto rounded-md border border-[#30363d]">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-[#161b22]">
+                              <th className={TH}>Model</th>
+                              <th className={TH}>Cap</th>
+                              <th className={TH}>Specs</th>
+                              <th className={TH}>Market</th>
+                              <th className={TH}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {game.models.map((option) => {
+                              const comparison = getMarketComparison(option.capability, game.marketStandard);
+                              const active = product.modelIds.includes(option.id);
 
-                          return (
-                            <button
-                              key={option.id}
-                              onClick={() => onAttachModel(activeProduct, String(option.id))}
-                              className={`rounded-2xl p-4 text-left text-sm transition ${
-                                active
-                                  ? "bg-cyan-400/10 text-cyan-100 ring-1 ring-inset ring-cyan-400/35"
-                                  : "bg-slate-900/85 text-slate-300 ring-1 ring-inset ring-slate-800/60 hover:bg-slate-900 hover:ring-slate-700"
-                              }`}
-                            >
-                              <div className="font-medium text-slate-100">
-                                {option.name} v{formatVersion(option.version)}
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                <Badge tone="default">#{option.id}</Badge>
-                                <Badge tone="default">Capability {option.capability}</Badge>
-                                <Badge tone={comparison.tone}>{comparison.label}</Badge>
-                              </div>
-                              <div className="mt-2 text-xs text-slate-500">
-                                {formatBigMemory(option.memorySize)} / {formatBigParams(option.parameterScale)} params / {formatBigContext(option.contextWindow)} ctx
-                              </div>
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {goals.map(([goalId, weight]) => (
-                                  <Badge key={goalId} tone="default">
-                                    {MODEL_GOALS[goalId as keyof typeof MODEL_GOALS].name} {weight}
-                                  </Badge>
-                                ))}
-                              </div>
-                            </button>
-                          );
-                        })}
+                              return (
+                                <tr key={option.id} className={`${TR} ${active ? "bg-[#0d1a2e]/60" : ""}`}>
+                                  <td className={TD}>
+                                    <div className="font-medium text-[#e6edf3]">{option.name} v{formatVersion(option.version)}</div>
+                                    <div className="text-xs text-[#8b949e]">#{option.id}</div>
+                                  </td>
+                                  <td className={TD + " font-mono text-[#3fb950]"}>{option.capability}</td>
+                                  <td className={TD + " font-mono text-xs text-[#8b949e]"}>
+                                    {formatBigMemory(option.memorySize)} / {formatBigParams(option.parameterScale)} / {formatBigContext(option.contextWindow)}
+                                  </td>
+                                  <td className={TD}><Badge tone={comparison.tone}>{comparison.label}</Badge></td>
+                                  <td className="px-3 py-2 text-right">
+                                    <Button onClick={() => onAttachModel(activeProduct, String(option.id))} variant={active ? "secondary" : "ghost"}>
+                                      {active ? "Active" : "Attach"}
+                                    </Button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>
                 </div>
 
                 <div className="space-y-4">
+                  <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
+                    <div className="text-sm font-medium text-[#c9d1d9]">Serving Posture</div>
+                    <div className="mt-1 text-sm text-[#484f58]">Set the operating stance for quality, margin, and latency discipline.</div>
+                    <label className="mt-4 block text-sm">
+                      <div className="mb-1 text-[#8b949e]">Routing Strategy</div>
+                      <select
+                        value={product.servingStrategy}
+                        onChange={(event) => onUpdateProductServingStrategy(activeProduct, event.target.value as ServingStrategyId)}
+                        className="w-full rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff]"
+                      >
+                        {SERVING_STRATEGY_OPTIONS.map((option) => (
+                          <option key={option.key} value={option.key}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Badge tone="default">{getServingStrategyLabel(product.servingStrategy)}</Badge>
+                      <Badge tone={(product.serving?.capacityPressure ?? 0) > 0.3 ? "warning" : "default"}>
+                        Pressure {(product.serving?.capacityPressure ?? 0).toFixed(2)}
+                      </Badge>
+                    </div>
+                  </div>
+
                   {activeProduct === "api" ? (
-                    <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
-                      <div className="text-sm font-medium text-slate-300">Deployment Defaults</div>
-                      <div className="mt-1 text-sm text-slate-500">New models inherit this price until you override them.</div>
+                    <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
+                      <div className="text-sm font-medium text-[#c9d1d9]">Deployment Defaults</div>
+                      <div className="mt-1 text-sm text-[#484f58]">New models inherit this price until you override them.</div>
                       <label className="mt-4 block text-sm">
-                        <div className="mb-1 text-slate-400">Default Price For New Models ({productDef.priceUnitLabel})</div>
+                        <div className="mb-1 text-[#8b949e]">Default Price For New Models ({productDef.priceUnitLabel})</div>
                         <input
                           type="number"
                           step={productDef.step}
                           value={product.price}
                           onChange={(event) => onUpdateProductPrice(activeProduct, event.target.value)}
-                          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none"
+                          className="w-full rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff]"
                         />
                       </label>
                     </div>
                   ) : (
-                    <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
+                    <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
                       <div className="flex items-center justify-between">
-                        <div className="text-sm font-medium text-slate-300">Subscription Plans</div>
+                        <div className="text-sm font-medium text-[#c9d1d9]">Subscription Plans</div>
                         <Button variant="ghost" onClick={onCreateSubscriptionPlan} className="px-2 py-1 text-xs">
                           + New Plan
                         </Button>
                       </div>
                       <div className="mt-4 space-y-4">
                         {product.subscriptionPlans?.map(plan => (
-                          <div key={plan.id} className="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
+                          <div key={plan.id} className="rounded border border-[#30363d] bg-[#161b22]/70 p-3">
                             <div className="flex justify-between items-start mb-2">
                               <input
-                                className="bg-transparent font-medium text-slate-100 outline-none w-32 border-b border-transparent focus:border-slate-600 focus:bg-slate-950"
+                                className="bg-transparent font-medium text-[#e6edf3] outline-none w-32 border-b border-transparent focus:border-[#58a6ff] focus:bg-[#0d1117]"
                                 value={plan.name}
                                 onChange={(e) => onUpdateSubscriptionPlan(plan.id, { name: e.target.value })}
                               />
-                              <button onClick={() => onDeleteSubscriptionPlan(plan.id)} className="text-rose-400 opacity-60 hover:opacity-100 text-xs">
+                              <button onClick={() => onDeleteSubscriptionPlan(plan.id)} className="text-[#f85149] opacity-60 hover:opacity-100 text-xs">
                                 Remove
                               </button>
                             </div>
                             <div className="grid grid-cols-2 gap-3 mb-3">
                               <label className="text-xs">
-                                <div className="text-slate-500 mb-1">Price/mo</div>
+                                <div className="text-[#484f58] mb-1">Price/mo</div>
                                 <input
                                   type="number"
-                                  className="w-full rounded bg-slate-950 px-2 py-1 text-slate-100 outline-none border border-slate-800"
+                                  className="w-full rounded bg-[#0d1117] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff] border border-[#30363d]"
                                   value={plan.price || 0}
                                   onChange={(e) => onUpdateSubscriptionPlan(plan.id, { price: Number(e.target.value) || 0 })}
                                 />
                               </label>
                               <label className="text-xs">
-                                <div className="text-slate-500 mb-1">Tokens (K)</div>
+                                <div className="text-[#484f58] mb-1">Tokens (K)</div>
                                 <input
                                   type="number"
-                                  className="w-full rounded bg-slate-950 px-2 py-1 text-slate-100 outline-none border border-slate-800"
+                                  className="w-full rounded bg-[#0d1117] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff] border border-[#30363d]"
                                   value={(plan.tokenLimitMillions || 0) * 1000}
                                   onChange={(e) => onUpdateSubscriptionPlan(plan.id, { tokenLimitMillions: (Number(e.target.value) || 0) / 1000 })}
                                 />
                               </label>
                             </div>
-                            <div className="mt-2 text-xs text-slate-400 space-y-1">
-                              <div className="flex justify-between"><span>Subscribers</span><span className="text-slate-300">{plan.subscribers.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span></div>
-                              <div className="flex justify-between"><span>Revenue</span><span className="text-slate-300">{money(plan.revenue)}</span></div>
-                              <div className="flex justify-between"><span>Usage (M)</span><span className="text-slate-300">{plan.tokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span></div>
+                            <div className="mt-2 text-xs text-[#8b949e] space-y-1">
+                              <div className="flex justify-between"><span>Subscribers</span><span className="text-[#c9d1d9]">{plan.subscribers.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span></div>
+                              <div className="flex justify-between"><span>Weekly Revenue</span><span className="text-[#c9d1d9]">{money(plan.revenue)}</span></div>
+                              <div className="flex justify-between"><span>Usage (M)</span><span className="text-[#c9d1d9]">{plan.tokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span></div>
                             </div>
                           </div>
                         ))}
@@ -486,14 +1018,14 @@ export function OverviewScreen({
                     </div>
                   )}
 
-                  <div className="rounded-2xl bg-slate-950/55 p-4 ring-1 ring-inset ring-slate-800/60">
-                    <div className="text-sm font-medium text-slate-300">Channel Readout</div>
+                  <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
+                    <div className="text-sm font-medium text-[#c9d1d9]">Channel Readout</div>
                     <div className="mt-4 space-y-3">
-                      <StatRow label="Line Revenue" value={money(product.revenue)} tone={product.revenue > product.computeCost ? "good" : "warning"} />
+                      <StatRow label="Last Week Revenue" value={money(product.revenue)} tone={product.revenue > product.computeCost ? "good" : "warning"} />
                       <StatRow label="Serving Cost" value={money(product.computeCost)} />
                       {activeProduct === "api" ? (
                         <StatRow
-                          label="Monthly Token Usage"
+                          label="Last Week Token Usage"
                           value={`${product.tokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 2 })}M`}
                         />
                       ) : null}
@@ -502,6 +1034,61 @@ export function OverviewScreen({
                         label={activeProduct === "chatbot" ? "Consumer Reach" : "Enterprise Reach"}
                         value={activeProduct === "chatbot" ? game.distribution.consumer.toFixed(1) : game.distribution.enterprise.toFixed(1)}
                       />
+                    </div>
+
+                    {inferenceSurfaceMetrics.length > 0 ? (
+                      <div className="mt-4 border-t border-[#21262d] pt-4">
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-[#484f58]">Inference Surface</div>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          {inferenceSurfaceMetrics.map((metric) => (
+                            <SurfaceMetricCard
+                              key={metric.label}
+                              label={metric.label}
+                              value={metric.value}
+                              tone={metric.tone}
+                              helper={metric.helper}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-4 border-t border-[#21262d] pt-4 space-y-3">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-[#484f58]">Cost Drivers</div>
+                        {displayedCostDrivers.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {displayedCostDrivers.map((driver) => (
+                              <span
+                                key={`cost-${driver}`}
+                                className="rounded-full bg-[#161b22] px-3 py-1.5 text-xs text-[#c9d1d9] border border-[#30363d]"
+                              >
+                                {driver}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-sm text-[#484f58]">Detailed cost drivers will appear here as serving fields land.</div>
+                        )}
+                      </div>
+
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-[#484f58]">Why Demand Changed</div>
+                        {displayedDemandDrivers.length > 0 ? (
+                          <div className="mt-2 space-y-2">
+                            {displayedDemandDrivers.map((driver) => (
+                              <div
+                                key={`demand-${driver}`}
+                                className="rounded-md bg-[#161b22]/70 px-3 py-2 text-sm text-[#c9d1d9] border border-[#30363d]"
+                              >
+                                {driver}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-sm text-[#484f58]">The sim has not exposed product-scoped demand-change reasons yet.</div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -513,10 +1100,10 @@ export function OverviewScreen({
         <Panel title="Alerts" subtitle="Recent product, training, market, and board updates.">
           <div className="space-y-3">
             {game.notifications.map((note) => (
-              <div key={note.id} className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+              <div key={note.id} className="rounded border border-[#30363d] bg-[#0d1117] p-3">
                 <div className="flex items-start gap-3">
                   <Badge tone={note.tone === "info" ? "default" : note.tone}>{note.tone}</Badge>
-                  <div className="text-sm leading-6 text-slate-300">{note.text}</div>
+                  <div className="text-sm leading-6 text-[#c9d1d9]">{note.text}</div>
                 </div>
               </div>
             ))}
@@ -524,40 +1111,43 @@ export function OverviewScreen({
         </Panel>
       </div>
 
-      <div className="space-y-6">
-        <Panel title="Company Health" subtitle="Financial momentum, operating pressure, and the next capital move in one place.">
-          <div className="space-y-6">
+      <div className="space-y-5">
+        <Panel title="Company Health" subtitle="Weekly operations feed this completed-month report, while ARR and runway stay monthly planning metrics.">
+          <div className="space-y-5">
             <div>
-              <div className="text-sm font-medium text-slate-300">Financials</div>
+              <div className="text-sm font-medium text-[#c9d1d9]">Financials</div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <CompanyMetric
-                  label="Revenue"
+                  label="Completed Month Revenue"
                   value={money(game.lastMonth.revenue)}
                   deltaLabel={revenueTrend.label}
                   deltaTone={revenueTrend.tone}
                   points={getTrendPoints(game.history.revenue, game.lastMonth.revenue)}
                 />
                 <CompanyMetric
-                  label="Profit"
+                  label="Completed Month Profit"
                   value={money(game.lastMonth.profit)}
                   deltaLabel={profitTrend.label}
                   deltaTone={profitTrend.tone}
                   points={getTrendPoints(game.history.profit, game.lastMonth.profit)}
                 />
               </div>
-              <div className="mt-4 space-y-3 rounded-2xl bg-slate-950/45 p-4 ring-1 ring-inset ring-slate-800/70">
+              <div className="mt-4 space-y-3 rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
                 <StatRow label="ARR" value={money(arr)} tone={arr >= 10000000 ? "good" : "default"} />
-                <StatRow label="Reserved Cloud Cost" value={money(game.lastMonth.computeReservedCost)} />
-                <StatRow label="Overflow Cost" value={money(game.lastMonth.overflowCost)} tone={game.lastMonth.overflowCost > 0 ? "warning" : "default"} />
-                <StatRow label="Payroll" value={money(game.lastMonth.payroll)} />
-                <StatRow label="Marketing Spend" value={money(game.lastMonth.marketingSpend)} tone={game.lastMonth.marketingSpend > 0 ? "warning" : "default"} />
+                <StatRow label="Reserved Cloud Cost Completed Month" value={money(game.lastMonth.computeReservedCost)} />
+                <StatRow label="Overflow Cost Completed Month" value={money(game.lastMonth.overflowCost)} tone={game.lastMonth.overflowCost > 0 ? "warning" : "default"} />
+                <StatRow label="Payroll Completed Month" value={money(game.lastMonth.payroll)} />
+                <StatRow label="Marketing Spend Completed Month" value={money(game.lastMonth.marketingSpend)} tone={game.lastMonth.marketingSpend > 0 ? "warning" : "default"} />
+                <StatRow label="Base Operations Completed Month" value={money(game.lastMonth.baseOpsCost ?? 0)} />
+                <StatRow label="Training Burn Completed Month" value={money(game.lastMonth.developmentCost ?? 0)} tone={(game.lastMonth.developmentCost ?? 0) > 0 ? "warning" : "default"} />
+                <StatRow label="Loan Payments Completed Month" value={money(game.lastMonth.loanPayments ?? 0)} tone={(game.lastMonth.loanPayments ?? 0) > 0 ? "warning" : "default"} />
                 <StatRow label="Funding Window" value={game.funding.available ? money(game.funding.offer) : `${monthsUntilFunding} mo`} />
                 <StatRow label="Dilution" value={game.funding.available ? pct(game.funding.dilution) : pct(game.totalDilution)} />
               </div>
             </div>
 
             <div>
-              <div className="text-sm font-medium text-slate-300">Operating Metrics</div>
+              <div className="text-sm font-medium text-[#c9d1d9]">Operating Metrics</div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <CompanyMetric
                   label="Company Trust"
@@ -574,7 +1164,7 @@ export function OverviewScreen({
                   points={getTrendPoints(game.history.boardPressure, game.boardPressure)}
                 />
               </div>
-              <div className="mt-4 space-y-3 rounded-2xl bg-slate-950/45 p-4 ring-1 ring-inset ring-slate-800/70">
+              <div className="mt-4 space-y-3 rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
                 <StatRow label="Consumer Distribution" value={game.distribution.consumer.toFixed(1)} />
                 <StatRow label="Enterprise Distribution" value={game.distribution.enterprise.toFixed(1)} />
                 <StatRow label="Market Standard" value={game.marketStandard} tone="warning" />
@@ -584,7 +1174,7 @@ export function OverviewScreen({
             </div>
 
             <div>
-              <div className="text-sm font-medium text-slate-300">Actions</div>
+              <div className="text-sm font-medium text-[#c9d1d9]">Actions</div>
               <div className="mt-3 flex flex-wrap gap-3">
                 <Button onClick={onRaiseFunding} variant="primary" disabled={!game.funding.available}>
                   Raise Round
@@ -608,23 +1198,23 @@ export function OverviewScreen({
       ) : (
           <Panel
             title="Released Models"
-            subtitle="Track every model your company has shipped with release timing, development cost, and current commercial performance."
+            subtitle="Release timing is weekly; commercial totals keep completed-month readouts for readability."
           >
             {releasedModels.length === 0 ? (
               <EmptyState title="No released models yet" body="Launch a run in the Lab to populate this table." />
             ) : (
-              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/45">
+              <div className="overflow-x-auto rounded-md border border-[#30363d] bg-[#0d1117]">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-900/85 text-slate-300">
+                  <thead className="bg-[#161b22] text-[#c9d1d9]">
                     <tr>
                       <th className="px-4 py-3 text-left font-medium">Name</th>
-                      <th className="px-4 py-3 text-left font-medium">Release Month</th>
+                      <th className="px-4 py-3 text-left font-medium">Release Week</th>
                       <th className="px-4 py-3 text-left font-medium">Dev Cost</th>
                       <th className="px-4 py-3 text-left font-medium">Total Revenue</th>
-                      <th className="px-4 py-3 text-left font-medium">Prev Month Revenue</th>
-                      <th className="px-4 py-3 text-left font-medium">Prev Month Users</th>
-                      <th className="px-4 py-3 text-left font-medium">Prev Month Acquisition</th>
-                      <th className="px-4 py-3 text-left font-medium">Prev Month Churn</th>
+                      <th className="px-4 py-3 text-left font-medium">Completed Month Revenue</th>
+                      <th className="px-4 py-3 text-left font-medium">Completed Month Users</th>
+                      <th className="px-4 py-3 text-left font-medium">Completed Month Acquisition</th>
+                      <th className="px-4 py-3 text-left font-medium">Completed Month Churn</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -638,9 +1228,9 @@ export function OverviewScreen({
                         
                       return (
                         <React.Fragment key={model.id}>
-                          <tr onClick={toggleExpand} className="cursor-pointer border-t border-slate-800/80 text-slate-200 hover:bg-slate-800/40">
-                            <td className="px-4 py-3 font-medium text-slate-50">{model.name}</td>
-                            <td className="px-4 py-3 font-mono">{monthLabel(model.releaseMonth)}</td>
+                          <tr onClick={toggleExpand} className="cursor-pointer border-t border-[#21262d] text-[#c9d1d9] hover:bg-[#161b22]/70">
+                            <td className="px-4 py-3 font-medium text-[#e6edf3]">{model.name}</td>
+                            <td className="px-4 py-3 font-mono">W{model.releaseWeek} / {monthLabelFromWeek(model.releaseWeek)}</td>
                             <td className="px-4 py-3 font-mono">{money(model.developmentCost)}</td>
                             <td className="px-4 py-3 font-mono">{money(model.totalRevenueGenerated)}</td>
                             <td className="px-4 py-3 font-mono">{money(model.previousMonthRevenueGenerated)}</td>
@@ -653,13 +1243,13 @@ export function OverviewScreen({
                             <td className="px-4 py-3 font-mono">{pct(model.previousMonthChurn)}</td>
                           </tr>
                           {isExpanded && model.subscribersByCohort && (
-                            <tr className="bg-slate-900/60 transition-all">
-                              <td colSpan={8} className="px-4 py-4 border-b border-slate-800">
+                            <tr className="bg-[#161b22]/70 transition-all">
+                              <td colSpan={8} className="px-4 py-4 border-b border-[#30363d]">
                                 <div className="flex flex-col gap-3">
-                                  <div className="flex flex-wrap items-center gap-6 text-sm text-slate-300">
-                                    <div className="w-48 font-medium text-slate-50 uppercase tracking-widest text-[10px]">Subscriber Core Demographics</div>
+                                  <div className="flex flex-wrap items-center gap-5 text-sm text-[#c9d1d9]">
+                                    <div className="w-48 font-medium text-[#e6edf3] uppercase tracking-widest text-[10px]">Subscriber Core Demographics</div>
                                     {totalSubscribers === 0 ? (
-                                      <div className="text-slate-500 italic">No market penetration</div>
+                                      <div className="text-[#484f58] italic">No market penetration</div>
                                     ) : (
                                       Object.entries(model.subscribersByCohort).map(([cohortId, count]) => {
                                         const share = ((Number(count) / totalSubscribers) * 100).toFixed(1);
@@ -668,7 +1258,7 @@ export function OverviewScreen({
                                         return (
                                           <div key={`share-${cohortId}`} className="flex flex-col">
                                             <span className="font-medium">{def.name}</span>
-                                            <span className="font-mono text-xs text-slate-400">
+                                            <span className="font-mono text-xs text-[#8b949e]">
                                               {share}% ({Number(count).toLocaleString()})
                                             </span>
                                           </div>
@@ -676,16 +1266,16 @@ export function OverviewScreen({
                                       })
                                     )}
                                   </div>
-                                  <div className="flex flex-wrap items-center gap-6 text-sm text-slate-300 border-t border-slate-800/60 pt-2">
-                                    <div className="w-48 font-medium text-slate-50 uppercase tracking-widest text-[10px]">Market Penetration</div>
+                                  <div className="flex flex-wrap items-center gap-5 text-sm text-[#c9d1d9] border-t border-[#21262d] pt-2">
+                                    <div className="w-48 font-medium text-[#e6edf3] uppercase tracking-widest text-[10px]">Market Penetration</div>
                                     {Object.entries(model.subscribersByCohort).map(([cohortId, count]) => {
                                       const def = game.globalCohorts[cohortId as CohortId];
                                       if (!def) return null;
                                       const penetration = ((Number(count) / def.population) * 100).toFixed(2);
                                       return (
                                         <div key={`pen-${cohortId}`} className="flex flex-col">
-                                          <span className="font-medium text-xs text-slate-400">{def.name} Penetration</span>
-                                          <span className="font-mono text-xs text-amber-300/80">
+                                          <span className="font-medium text-xs text-[#8b949e]">{def.name} Penetration</span>
+                                          <span className="font-mono text-xs text-[#d29922]">
                                             {penetration}%
                                           </span>
                                         </div>

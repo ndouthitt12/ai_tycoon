@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 
 import { RIVALS } from "../game/defs";
-import { formatBigContext, formatBigMemory, formatBigParams, formatVersion, getMarketCompanyTable, getMarketModelTable, money, monthLabel } from "../game/sim";
+import { WEEKS_PER_MONTH, formatBigContext, formatBigMemory, formatBigParams, formatVersion, getMarketCompanyTable, getMarketModelTable, money, monthLabelFromWeek } from "../game/sim";
 import { CohortId, GameState } from "../game/types";
 import { Badge, EmptyState, Panel, SegmentedControl, StatRow } from "../components/ui";
 
@@ -73,7 +73,7 @@ export function MarketScreen({ game }: { game: GameState }) {
         : modelSort.key === "name"
           ? `${left.name} ${formatVersion(left.version)}`
           : modelSort.key === "releaseMonth"
-            ? left.releaseMonth
+            ? left.releaseWeek ?? (left.releaseMonth - 1) * WEEKS_PER_MONTH + 1
             : modelSort.key === "capability"
               ? left.capability
               : modelSort.key === "marketDelta"
@@ -113,7 +113,7 @@ export function MarketScreen({ game }: { game: GameState }) {
         : modelSort.key === "name"
           ? `${right.name} ${formatVersion(right.version)}`
           : modelSort.key === "releaseMonth"
-            ? right.releaseMonth
+            ? right.releaseWeek ?? (right.releaseMonth - 1) * WEEKS_PER_MONTH + 1
             : modelSort.key === "capability"
               ? right.capability
               : modelSort.key === "marketDelta"
@@ -199,6 +199,7 @@ export function MarketScreen({ game }: { game: GameState }) {
               <div className="grid gap-4">
                 {Object.values(RIVALS).map((rival) => {
                   const state = game.rivals[rival.id];
+                  const cooldownWeeks = Math.max(0, Math.ceil(state.cooldown));
                   return (
                     <div key={rival.id} className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
                       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -206,7 +207,7 @@ export function MarketScreen({ game }: { game: GameState }) {
                           <div className="text-lg font-semibold text-slate-50">{rival.name}</div>
                           <div className="mt-1 text-sm text-slate-400">{rival.summary}</div>
                         </div>
-                        <Badge tone="warning">{state.cooldown} mo</Badge>
+                        <Badge tone="warning">{cooldownWeeks} wk</Badge>
                       </div>
                       <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-300">
                         {state.lastAction ?? "No recent move. Monitor cooldown and prepare for the next shock."}
@@ -217,24 +218,27 @@ export function MarketScreen({ game }: { game: GameState }) {
               </div>
             </Panel>
 
-            <Panel title="Market Modifiers" subtitle="Temporary channel pressure makes the strategic layer visible month to month.">
+            <Panel title="Market Modifiers" subtitle="Temporary channel pressure makes the strategic layer visible week to week.">
               <div className="space-y-3">
                 {game.marketModifiers.length === 0 ? (
                   <EmptyState title="No active modifiers" body="The market is calm for now. That usually does not last." />
                 ) : (
-                  game.marketModifiers.map((modifier) => (
-                    <div key={modifier.id} className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-base font-semibold text-slate-50">{modifier.title}</div>
-                          <div className="mt-1 text-sm text-slate-400">{modifier.description}</div>
+                  game.marketModifiers.map((modifier) => {
+                    const weeksRemaining = Math.max(0, Math.ceil(modifier.weeksRemaining ?? (modifier.turnsRemaining ?? 0) * 4));
+                    return (
+                      <div key={modifier.id} className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-base font-semibold text-slate-50">{modifier.title}</div>
+                            <div className="mt-1 text-sm text-slate-400">{modifier.description}</div>
+                          </div>
+                          <Badge tone={modifier.type === "pricing_pressure" ? "warning" : "bad"}>
+                            {weeksRemaining} wk
+                          </Badge>
                         </div>
-                        <Badge tone={modifier.type === "pricing_pressure" ? "warning" : "bad"}>
-                          {modifier.turnsRemaining} mo
-                        </Badge>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </Panel>
@@ -271,7 +275,7 @@ export function MarketScreen({ game }: { game: GameState }) {
                   </th>
                   <th className="px-4 py-3 text-left font-medium">
                     <button type="button" onClick={() => toggleModelSort("releaseMonth")} className="transition hover:text-slate-100">
-                      {renderSortLabel("Release Month", "releaseMonth")}
+                      {renderSortLabel("Release Week", "releaseMonth")}
                     </button>
                   </th>
                   <th className="px-4 py-3 text-left font-medium">
@@ -385,7 +389,9 @@ export function MarketScreen({ game }: { game: GameState }) {
                             {model.name} v{formatVersion(model.version)}
                           </div>
                         </td>
-                        <td className="px-4 py-3 font-mono">{monthLabel(model.releaseMonth)}</td>
+                        <td className="px-4 py-3 font-mono">
+                          W{model.releaseWeek ?? (model.releaseMonth - 1) * WEEKS_PER_MONTH + 1} / {monthLabelFromWeek(model.releaseWeek ?? (model.releaseMonth - 1) * WEEKS_PER_MONTH + 1)}
+                        </td>
                         <td className="px-4 py-3 font-mono">{model.capability}</td>
                         <td className="px-4 py-3">
                           <Badge tone={model.marketTone}>{model.marketLabel}</Badge>

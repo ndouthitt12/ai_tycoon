@@ -2,7 +2,12 @@ export type ScreenId = "overview" | "strategy" | "lab" | "compute" | "market" | 
 
 export type NotificationTone = "info" | "good" | "warning" | "bad";
 export type ProductTypeId = "chatbot" | "api";
+export type ServingStrategyId = "flagship" | "tiered" | "cached" | "enterprise_sla";
 export type RoleId = "researchers" | "engineers" | "sales";
+export type DepartmentId = "research" | "engineering" | "go_to_market";
+export type EmployeeLevelId = "staff" | "lead" | "director" | "executive";
+export type EmployeeStatusId = "active" | "leave" | "departed";
+export type ResearchSpecialtyId = "reasoning" | "multimodal" | "safety" | "inference" | "agentic" | "data";
 export type DataTierId = "web" | "licensed" | "synthesized";
 export type DatasetPackSizeId = "small" | "medium" | "large";
 export type ModelSizeId = "small" | "medium" | "large" | "frontier";
@@ -44,8 +49,11 @@ export interface Loan {
   principal: number;
   term: number;
   elapsed: number;
+  termWeeks?: number;
+  elapsedWeeks?: number;
   interestFeePct: number;
   monthlyPayment: number;
+  weeklyPayment?: number;
 }
 
 export type CompetitorBehaviorId = "disciplined" | "balanced" | "aggressive";
@@ -72,7 +80,7 @@ export type ArchetypeId =
 export type BoardDirectiveId = "growth" | "profitability" | "frontier_research" | "enterprise_trust";
 export type RivalId = "frontier_rival" | "platform_giant" | "open_model_rival";
 export type MarketModifierId = "pricing_pressure" | "commoditization";
-export type RunEventType = "loss_spike" | "data_glitch" | "burst_window";
+export type RunEventType = "loss_spike" | "data_glitch" | "burst_window" | "talent_poach" | "talent_breakthrough" | "talent_burnout";
 
 export interface NotificationItem {
   id: number;
@@ -91,6 +99,27 @@ export interface SubscriptionPlan {
   tokenUsageMillions: number;
 }
 
+export interface ProductTrafficState {
+  baselineTokensMillions: number;
+  burstMultiplier: number;
+  averageContextUtilization: number;
+  batchingFriendliness: number;
+  viralPressure: number;
+}
+
+export interface ProductServingState {
+  effectiveTokensPerPod: number;
+  contextPenalty: number;
+  batchingEfficiency: number;
+  modelWeightPenalty: number;
+  hardwareEfficiency: number;
+  strategyCapacityPenalty: number;
+  burstPodsUsed: number;
+  burstCost: number;
+  overflowPods: number;
+  capacityPressure: number;
+}
+
 export interface ProductState {
   type: ProductTypeId;
   modelIds: number[];
@@ -105,6 +134,9 @@ export interface ProductState {
   acquisition: number;
   trust: number;
   lastLaunchMonth: number;
+  servingStrategy: ServingStrategyId;
+  traffic: ProductTrafficState;
+  serving: ProductServingState;
   subscriptionPlans?: SubscriptionPlan[];
 }
 
@@ -123,19 +155,71 @@ export interface ModelState {
   contextWindow: number;
   goals: Record<ModelGoalId, number>;
   trainingDataUnits: number;
+  weekBuilt?: number;
   monthBuilt: number;
   sizeKey: ModelSizeId;
   dataTier: DataTierId;
   subscribersByCohort: Record<CohortId, number>;
+  cohortTenureWeeks: Record<CohortId, number>;
   reliability: Record<ReliabilityTierId, number>;
 }
 
 export interface ModelPerformanceState {
   totalRevenue: number;
+  lastWeekRevenue: number;
+  lastWeekAcquisition: number;
+  lastWeekChurn: number;
+  lastWeekUsers: number;
   lastMonthRevenue: number;
   lastMonthAcquisition: number;
   lastMonthChurn: number;
   lastMonthUsers: number;
+}
+
+export interface EmployeeState {
+  id: number;
+  name: string;
+  departmentId: DepartmentId;
+  roleId: RoleId;
+  title: string;
+  level: EmployeeLevelId;
+  salary: number;
+  specialty: ResearchSpecialtyId | null;
+  skill: number;
+  leadership: number;
+  loyalty: number;
+  burnout: number;
+  poachRisk: number;
+  breakthroughChance: number;
+  active: boolean;
+  status: EmployeeStatusId;
+  assignedRunId: number | null;
+}
+
+export interface HiringCandidateState {
+  id: number;
+  name: string;
+  departmentId: DepartmentId;
+  roleId: RoleId;
+  title: string;
+  level: EmployeeLevelId;
+  salary: number;
+  specialty: ResearchSpecialtyId | null;
+  skill: number;
+  leadership: number;
+  loyalty: number;
+  poachRisk: number;
+  breakthroughChance: number;
+  signingCost: number;
+}
+
+export interface DepartmentState {
+  id: DepartmentId;
+  name: string;
+  roleId: RoleId;
+  leadEmployeeId: number | null;
+  morale: number;
+  managementQuality: number;
 }
 
 export interface ActiveRun {
@@ -149,8 +233,10 @@ export interface ActiveRun {
   sizeKey: ModelSizeId;
   dataTier: DataTierId;
   computeNeed: number;
-  totalMonths: number;
-  monthsElapsed: number;
+  totalWeeks: number;
+  weeksElapsed: number;
+  totalMonths?: number;
+  monthsElapsed?: number;
   projectedCapability: number;
   projectedInferenceCost: number;
   projectedTrust: number;
@@ -169,6 +255,8 @@ export interface ActiveRun {
   eventTriggered: boolean;
   lossCurve: number[];
   reliability: Record<ReliabilityTierId, number>;
+  assignedResearcherIds: number[];
+  keyPersonRisk: number;
 }
 
 export interface PendingEventChoice {
@@ -179,7 +267,8 @@ export interface PendingEventChoice {
 
 export interface PendingEvent {
   type: RunEventType;
-  runId: number;
+  runId: number | null;
+  employeeId?: number | null;
   title: string;
   body: string;
   choices: PendingEventChoice[];
@@ -189,7 +278,9 @@ export interface FundingState {
   available: boolean;
   offer: number;
   dilution: number;
-  lastRaisedTurn: number;
+  lastRaisedWeek?: number;
+  /** @deprecated Compatibility alias for old monthly saves. Use lastRaisedWeek. */
+  lastRaisedTurn?: number;
 }
 
 export interface DatacenterState {
@@ -197,7 +288,19 @@ export interface DatacenterState {
   name: string;
   pods: number;
   buildCost: number;
+  weekBuilt?: number;
   monthBuilt: number;
+}
+
+export interface PlannedDatacenterState {
+  id: number;
+  name: string;
+  pods: number;
+  buildCost: number;
+  weekOrdered?: number;
+  weeksRemaining?: number;
+  monthOrdered?: number;
+  monthsRemaining?: number;
 }
 
 export interface RivalState {
@@ -212,7 +315,9 @@ export interface MarketModifier {
   source: RivalId;
   title: string;
   description: string;
-  turnsRemaining: number;
+  weeksRemaining?: number;
+  /** @deprecated Compatibility alias for old monthly saves. Use weeksRemaining. */
+  turnsRemaining?: number;
   intensity: number;
 }
 
@@ -228,10 +333,16 @@ export interface LastMonthSnapshot {
   users: number;
   payroll: number;
   marketingSpend: number;
+  baseOpsCost?: number;
+  loanPayments?: number;
   computeReservedCost: number;
+  burstCloudCost: number;
   overflowCost: number;
   servingDemand: number;
   trainingDemand: number;
+  burstCloudPodsUsed: number;
+  datacenterCapacityAdded: number;
+  datacenterCapacityPending: number;
   trustDelta: number;
   distributionDelta: {
     consumer: number;
@@ -239,6 +350,44 @@ export interface LastMonthSnapshot {
   };
   cloudRentalRevenue: number;
   cloudRentalPodsRented: number;
+  developmentCost?: number;
+  hiringSpend: number;
+  severanceCost: number;
+  products?: Record<ProductTypeId, ProductPeriodSnapshot>;
+}
+
+export interface OperatingCashflowSnapshot {
+  payroll: number;
+  marketingSpend: number;
+  baseOpsCost: number;
+  loanPayments: number;
+  computeReservedCost: number;
+  cloudRentalRevenue: number;
+  cloudRentalPodsRented: number;
+  developmentCost: number;
+}
+
+export interface ProductPeriodSnapshot {
+  revenue: number;
+  users: number;
+  acquisition: number;
+  churnedUsers: number;
+  churn: number;
+  tokenUsageMillions: number;
+  computeDemand: number;
+  computeCost: number;
+}
+
+export interface ProductReportingSnapshot {
+  revenue: number;
+  users: number;
+  acquisition: number;
+  churnedUsers: number;
+  churn: number;
+  tokenUsageMillions: number;
+  computeDemand: number;
+  computeCost: number;
+  products: Record<ProductTypeId, ProductPeriodSnapshot>;
 }
 
 export interface GameHistory {
@@ -263,10 +412,13 @@ export interface TrainingConfig {
   goals: Record<ModelGoalId, number>;
   trainingDataUnits: number;
   reliability: Record<ReliabilityTierId, number>;
+  assignedResearcherIds: number[];
 }
 
 export interface GameState {
+  /** @deprecated Compatibility alias for old monthly saves/UI. Use week for simulation time. */
   turn: number;
+  week: number;
   status: "playing" | "lost";
   cash: number;
   engineerTrainingLevel: number;
@@ -280,7 +432,9 @@ export interface GameState {
   };
   boardPressure: number;
   currentDirective: BoardDirectiveId | null;
+  /** @deprecated Compatibility alias for old monthly saves. Use directiveWeeksRemaining. */
   directiveTurnsRemaining: number;
+  directiveWeeksRemaining?: number;
   marketStandard: number;
   competitorLaunchShock: number;
   rivals: Record<RivalId, RivalState>;
@@ -292,11 +446,15 @@ export interface GameState {
     reservedPods: number;
     trainingPct: number;
     datacenters: DatacenterState[];
+    plannedDatacenters: PlannedDatacenterState[];
     nextDatacenterId: number;
   };
   cloudRental: {
     pricePerPod: number;
   };
+  departments: Record<DepartmentId, DepartmentState>;
+  employees: EmployeeState[];
+  hiringMarket: HiringCandidateState[];
   globalCohorts: Record<CohortId, CohortDef>;
   products: Record<ProductTypeId, ProductState>;
   trainingConfig: TrainingConfig;
@@ -314,6 +472,9 @@ export interface GameState {
   notifications: NotificationItem[];
   deficitMonths: number;
   loans: Loan[];
+  lastWeek: ProductReportingSnapshot;
+  currentMonthToDate: ProductReportingSnapshot;
+  currentMonthCashflow: OperatingCashflowSnapshot;
   lastMonth: LastMonthSnapshot;
   nextId: number;
 }
@@ -459,11 +620,18 @@ export interface CompetitorModelState {
   parameterScale: number;
   contextWindow: number;
   goals: Record<ModelGoalId, number>;
+  weekBuilt?: number;
   monthBuilt: number;
+  releaseWeek?: number;
   releaseMonth: number;
   apiPrice: number | null;
   chatPrice: number | null;
+  launchChatPrice: number | null;
+  launchApiPrice: number | null;
+  chatPriceHistory: number[];
+  apiPriceHistory: number[];
   subscribersByCohort: Record<CohortId, number>;
+  cohortTenureWeeks: Record<CohortId, number>;
   reliability: Record<ReliabilityTierId, number>;
 }
 
@@ -473,7 +641,11 @@ export interface CompetitorCompanyState {
   revenueHistory: number[];
   profitHistory: number[];
   models: CompetitorModelState[];
+  pricingCooldownWeeks: number;
+  lastPriceReviewWeek: number;
   releaseIndex: number;
+  nextReleaseWeek?: number;
+  /** @deprecated Compatibility alias for old monthly saves. Use nextReleaseWeek. */
   nextReleaseMonth: number;
   currentFamilyName: string;
 }
