@@ -95,6 +95,24 @@ function readRecord(source: unknown, ...keys: string[]) {
   return null;
 }
 
+function readOperatingCashflowTotal(source: unknown) {
+  const record = asRecord(source);
+  if (!record) return null;
+  const direct = readNumber(record, "netCashflow", "cashflow", "profit");
+  if (direct !== null) return direct;
+
+  const cloudRentalRevenue = readNumber(record, "cloudRentalRevenue") ?? 0;
+  const payroll = readNumber(record, "payroll") ?? 0;
+  const marketingSpend = readNumber(record, "marketingSpend") ?? 0;
+  const baseOpsCost = readNumber(record, "baseOpsCost") ?? 0;
+  const loanPayments = readNumber(record, "loanPayments") ?? 0;
+  const computeReservedCost = readNumber(record, "computeReservedCost") ?? 0;
+  const developmentCost = readNumber(record, "developmentCost") ?? 0;
+  const maintenanceCost = readNumber(record, "maintenanceCost") ?? 0;
+
+  return cloudRentalRevenue - payroll - marketingSpend - baseOpsCost - loanPayments - computeReservedCost - developmentCost - maintenanceCost;
+}
+
 function readArray(source: unknown, ...keys: string[]) {
   const record = asRecord(source);
   if (!record) return null;
@@ -249,6 +267,30 @@ export function ComputeScreen({
     game.lastMonth.servingDemand > 0
       ? Math.max(0, game.lastMonth.servingDemand - allocatedServing) / Math.max(1, game.lastMonth.servingDemand) * 100
       : 0;
+  const lastWeekServingDemand = readNumber(game, "lastWeekServingDemand", "weeklyServingDemand")
+    ?? readNumber(game.lastWeek, "servingDemand", "computeDemand")
+    ?? game.lastWeek.computeDemand;
+  const lastWeekServingGap = allocatedServing - lastWeekServingDemand;
+  const lastWeekServingPressurePct =
+    lastWeekServingDemand > 0
+      ? Math.max(0, lastWeekServingDemand - allocatedServing) / Math.max(1, lastWeekServingDemand) * 100
+      : 0;
+  const lastWeekComputeCost = readNumber(game, "lastWeekComputeCost", "weeklyComputeCost")
+    ?? readNumber(game.lastWeek, "computeCost")
+    ?? game.lastWeek.computeCost;
+  const lastWeekTrainingDemand = readNumber(game, "lastWeekTrainingDemand", "weeklyTrainingDemand")
+    ?? readNumber(game.lastWeek, "trainingDemand");
+  const lastWeekCashflowSource = readRecord(game, "lastWeekCashflow", "weeklyCashflow");
+  const lastWeekCashflow = readNumber(game, "lastWeekCashflow", "weeklyCashflow")
+    ?? readOperatingCashflowTotal(lastWeekCashflowSource);
+  const currentMonthOperatingCashflow = game.currentMonthCashflow.cloudRentalRevenue
+    - game.currentMonthCashflow.payroll
+    - game.currentMonthCashflow.marketingSpend
+    - game.currentMonthCashflow.baseOpsCost
+    - game.currentMonthCashflow.loanPayments
+    - game.currentMonthCashflow.computeReservedCost
+    - (game.currentMonthCashflow.developmentCost ?? 0)
+    - (game.currentMonthCashflow.maintenanceCost ?? 0);
 
   const datacenterGroups = Object.values(
     game.cloud.datacenters.reduce<Record<number, { pods: number; count: number; totalBuildCost: number }>>((groups, datacenter) => {
@@ -314,10 +356,12 @@ export function ComputeScreen({
   }, null);
 
   const burstCloudPods =
-    readNumber(game.lastMonth, "burstCloudPods", "burstPods", "cloudBurstPods", "burstCapacityPods", "burstCloudUsage")
+    readNumber(game.lastWeek, "burstCloudPods", "burstPods", "cloudBurstPods", "burstCapacityPods", "burstCloudUsage")
+    ?? readNumber(game.lastMonth, "burstCloudPods", "burstPods", "cloudBurstPods", "burstCapacityPods", "burstCloudUsage")
     ?? readNumber(game.cloud, "burstCloudPods", "burstPods", "cloudBurstPods", "burstCapacityPods");
   const burstCloudCost =
-    readNumber(game.lastMonth, "burstCloudCost", "burstCost", "cloudBurstCost", "burstCapacityCost")
+    readNumber(game.lastWeek, "burstCloudCost", "burstCost", "cloudBurstCost", "burstCapacityCost")
+    ?? readNumber(game.lastMonth, "burstCloudCost", "burstCost", "cloudBurstCost", "burstCapacityCost")
     ?? readNumber(game.cloud, "burstCloudCost", "burstCost", "cloudBurstCost", "burstCapacityCost");
 
   const modelNamesById = new Map(game.models.map((model) => [model.id, `${model.name} v${formatVersion(model.version)}`]));
@@ -397,10 +441,10 @@ export function ComputeScreen({
       ? `Queued capacity adds ${formatPods(queuedCapacityPods)} pods, with the next tranche arriving in ${formatMetricWeeks(nextQueuedEta)}.`
       : "No additional datacenter capacity is queued, so any spike will lean on overflow or discipline.",
     (burstCloudPods ?? 0) > 0
-      ? `Burst cloud covered ${formatPods(burstCloudPods ?? 0)} pods in the completed month${burstCloudCost ? ` for ${money(burstCloudCost)}` : ""}.`
-      : game.lastMonth.overflowCost > 0
-        ? "Overflow spend hit in the completed month, which means demand already outran the reserved fleet."
-        : "Overflow stayed contained in the completed month, so risk is mostly about keeping future spikes absorbed.",
+      ? `Burst cloud covered ${formatPods(burstCloudPods ?? 0)} pods in the latest exposed period${burstCloudCost ? ` for ${money(burstCloudCost)}` : ""}.`
+      : lastWeekServingGap < 0
+        ? "Last week outran the reserved serving split, so future spikes need overflow coverage or capacity."
+        : "Last week stayed inside the reserved serving split, so risk is mostly about keeping future spikes absorbed.",
   ];
 
   function commitRentalPrice() {
@@ -605,13 +649,13 @@ export function ComputeScreen({
                   <span className="font-mono text-sm text-[#e6edf3]">{formatPods(estimatedSurplus)}</span>
                 </div>
                 <div className={FIELD_ROW}>
-                  <span className="text-sm text-[#8b949e]">Avg Rented Completed Month</span>
-                  <span className="font-mono text-sm text-[#e6edf3]">{formatPods(game.lastMonth.cloudRentalPodsRented)}</span>
+                  <span className="text-sm text-[#8b949e]">Pods Rented MTD</span>
+                  <span className="font-mono text-sm text-[#e6edf3]">{formatPods(game.currentMonthCashflow.cloudRentalPodsRented)}</span>
                 </div>
                 <div className={FIELD_ROW}>
-                  <span className="text-sm text-[#8b949e]">Rental Revenue Completed Month</span>
-                  <span className={`font-mono text-sm ${game.lastMonth.cloudRentalRevenue > 0 ? "text-[#3fb950]" : "text-[#e6edf3]"}`}>
-                    {money(game.lastMonth.cloudRentalRevenue)}
+                  <span className="text-sm text-[#8b949e]">Rental Revenue MTD</span>
+                  <span className={`font-mono text-sm ${game.currentMonthCashflow.cloudRentalRevenue > 0 ? "text-[#3fb950]" : "text-[#e6edf3]"}`}>
+                    {money(game.currentMonthCashflow.cloudRentalRevenue)}
                   </span>
                 </div>
               </div>
@@ -737,7 +781,7 @@ export function ComputeScreen({
           </div>
         </Panel>
 
-        <Panel title="Serving Risk" subtitle="Projected demand is weekly; completed-month rows show the last closed report.">
+        <Panel title="Serving Risk" subtitle="Projected and last-week demand lead; completed-month rows stay as closed-report context.">
           <div className="overflow-hidden rounded-md border border-[#30363d]">
             <div className="bg-[#161b22] px-3 py-2">
               <div className="text-sm font-medium text-[#c9d1d9]">
@@ -748,11 +792,21 @@ export function ComputeScreen({
               <StatRow label="Reserved Serving Pods" value={formatPods(allocatedServing)} />
               <StatRow label="Projected Serving Demand" value={formatPods(projectedServingDemand)} tone={getPressureTone(projectedServingPressurePct)} />
               <StatRow label="Projected Traffic Pressure" value={formatPercent(projectedServingPressurePct)} tone={getPressureTone(projectedServingPressurePct)} />
+              <StatRow label="Last Week Serving Demand" value={formatPods(lastWeekServingDemand)} tone={getPressureTone(lastWeekServingPressurePct)} />
+              <StatRow label="Last Week Headroom" value={`${lastWeekServingGap >= 0 ? "" : "-"}${formatPods(Math.abs(lastWeekServingGap))}`} tone={getBalanceTone(lastWeekServingGap)} />
+              <StatRow label="Last Week Compute Cost" value={money(lastWeekComputeCost)} tone={lastWeekComputeCost > 0 ? "warning" : "default"} />
+              {lastWeekCashflow !== null ? (
+                <StatRow label="Last Week Cashflow" value={money(lastWeekCashflow)} tone={lastWeekCashflow >= 0 ? "good" : "bad"} />
+              ) : (
+                <StatRow label="Current Month Cashflow" value={money(currentMonthOperatingCashflow)} tone={currentMonthOperatingCashflow >= 0 ? "good" : "bad"} />
+              )}
+              {lastWeekTrainingDemand !== null ? (
+                <StatRow label="Last Week Training Demand" value={formatPods(lastWeekTrainingDemand)} tone={lastWeekTrainingDemand > allocatedTraining ? "warning" : "default"} />
+              ) : null}
+              {burstCloudCost !== null && <StatRow label="Latest Burst Cloud Cost" value={money(burstCloudCost)} tone={burstCloudCost > 0 ? "warning" : "default"} />}
               <StatRow label="Completed Month Serving Demand" value={formatPods(game.lastMonth.servingDemand)} tone={getPressureTone(lastMonthServingPressurePct)} />
               <StatRow label="Completed Month Headroom" value={`${lastMonthServingGap >= 0 ? "" : "-"}${formatPods(Math.abs(lastMonthServingGap))}`} tone={getBalanceTone(lastMonthServingGap)} />
               <StatRow label="Completed Month Overflow Cost" value={money(game.lastMonth.overflowCost)} tone={game.lastMonth.overflowCost > 0 ? "warning" : "good"} />
-              <StatRow label="Completed Month Training Demand" value={formatPods(game.lastMonth.trainingDemand)} tone={game.lastMonth.trainingDemand > allocatedTraining ? "warning" : "default"} />
-              {burstCloudCost !== null && <StatRow label="Burst Cloud Cost" value={money(burstCloudCost)} tone={burstCloudCost > 0 ? "warning" : "default"} />}
               {queuedCapacityPods > 0 && <StatRow label="Queued Capacity" value={formatPods(queuedCapacityPods)} />}
             </div>
             <div className="border-t border-[#30363d] bg-[#0d1117] p-3">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
 import { DATA_TIERS, DEPARTMENT_LABELS, MODEL_GOALS, MODEL_SIZES, RELIABILITY_TIERS, RESEARCH_SPECIALTY_LABELS, ROLE_LABELS, SALARIES, UPGRADES } from "../game/defs";
 import {
@@ -18,8 +18,9 @@ import {
   formatPods,
   WEEKS_PER_MONTH,
 } from "../game/sim";
-import { DataTierId, GameState, RoleId, UpgradeId } from "../game/types";
-import { Badge, Button, EmptyState, Panel } from "../components/ui";
+import { getPostTrainingEstimate } from "../game/systems/postTraining";
+import { DataTierId, GameState, ModelGoalId, PostTrainingConfig, RoleId, UpgradeId } from "../game/types";
+import { Badge, Button, EmptyState, Panel, Tone } from "../components/ui";
 
 const BASE_MEMORY = { small: 8, medium: 16, large: 32, frontier: 64 } as const;
 const BASE_PARAMS = { small: 8, medium: 22, large: 56, frontier: 120 } as const;
@@ -34,6 +35,59 @@ const INPUT_CLS = "rounded border border-[#30363d] bg-[#161b22] px-2 py-1.5 text
 const SELECT_CLS = "rounded border border-[#30363d] bg-[#161b22] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff] w-full disabled:cursor-not-allowed disabled:opacity-50";
 const SECTION_LABEL = "mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6e7681]";
 
+type LabModel = GameState["models"][number] & {
+  deprecated?: boolean;
+  deprecationStartWeek?: number | null;
+  lifecycleStatus?: string;
+  maintenanceCostPerMonth?: number;
+  pendingSafetyRisk?: number;
+  retired?: boolean;
+  needsPostTrainingConfig?: boolean;
+};
+
+const DEFAULT_POST_TRAINING_CONFIG: PostTrainingConfig = {
+  rlhf: true,
+  domainFocus: null,
+  redTeam: true,
+  weeksAllocated: 7,
+};
+
+function getModelReleaseWeek(model: GameState["models"][number]) {
+  return model.weekBuilt ?? (model.monthBuilt - 1) * WEEKS_PER_MONTH + 1;
+}
+
+function getModelLifecycleStatus(model: LabModel, postTrainingRuns: GameState["postTrainingRuns"]) {
+  const explicitStatus = typeof model.lifecycleStatus === "string" ? model.lifecycleStatus.toLowerCase() : "";
+  if (model.retired || explicitStatus === "retired") return "Retired";
+  if (model.deprecated || explicitStatus === "deprecating") return "Deprecating";
+  if (model.postTrainingComplete === false || postTrainingRuns.some((run) => run.modelId === model.id)) return "Post-Training";
+  return "Active";
+}
+
+function getLifecycleTone(status: string): Tone {
+  if (status === "Active") return "good";
+  if (status === "Post-Training") return "warning";
+  if (status === "Deprecating") return "bad";
+  return "default";
+}
+
+function getCapabilityDriftLabel(model: LabModel) {
+  const internal = model.trueCapability ?? model.capability;
+  const benchmark = model.demonstratedCapability ?? model.capability;
+  const drift = model.capabilityDrift ?? internal - benchmark;
+  if (Math.abs(drift) < 0.1) return "stable";
+  return drift > 0 ? `+${drift.toFixed(1)} / wk` : `${drift.toFixed(1)} / wk`;
+}
+
+function getHeldModelsNeedingConfig(game: GameState) {
+  const postTrainingRuns = game.postTrainingRuns ?? [];
+  return game.models.filter((entry) => {
+    const model = entry as LabModel;
+    const hasRun = postTrainingRuns.some((run) => run.modelId === model.id);
+    return !hasRun && (model.needsPostTrainingConfig === true || model.postTrainingComplete === false);
+  });
+}
+
 export function LabScreen({
   game,
   preview,
@@ -47,6 +101,8 @@ export function LabScreen({
   onUpdateTrainingConfig,
   onBumpVersion,
   onLaunchRun,
+  onStartPostTraining,
+  onDeprecateModel,
 }: {
   game: GameState;
   preview: {
@@ -82,6 +138,8 @@ export function LabScreen({
   onUpdateTrainingConfig: (patch: Partial<GameState["trainingConfig"]>) => void;
   onBumpVersion: () => void;
   onLaunchRun: () => void;
+  onStartPostTraining: (modelId: number, config: PostTrainingConfig) => void;
+  onDeprecateModel?: (modelId: number) => void;
 }) {
   const [dataPurchaseUnits, setDataPurchaseUnits] = useState<Record<DataTierId, string>>({
     web: "1",
@@ -93,6 +151,10 @@ export function LabScreen({
     engineers: "1",
     sales: "1",
   });
+  const [expandedModelId, setExpandedModelId] = useState<number | null>(null);
+  const [postTrainingModelId, setPostTrainingModelId] = useState<number | null>(null);
+  const [postTrainingConfig, setPostTrainingConfig] = useState<PostTrainingConfig>(DEFAULT_POST_TRAINING_CONFIG);
+  const [confirmDeprecateModelId, setConfirmDeprecateModelId] = useState<number | null>(null);
 
   const derivedMode = game.trainingConfig.mode === "upgrade" || game.trainingConfig.mode === "branch";
   const upgradeMode = game.trainingConfig.mode === "upgrade";
@@ -123,8 +185,19 @@ export function LabScreen({
     (e) => e.assignedRunId === null || game.trainingConfig.assignedResearcherIds.includes(e.id),
   );
   const previewTotalWeeks = Math.ceil(preview.totalMonths * WEEKS_PER_MONTH);
+  const postTrainingRuns = game.postTrainingRuns ?? [];
+  const heldModelsNeedingConfig = getHeldModelsNeedingConfig(game);
+  const modalModel =
+    (postTrainingModelId !== null ? game.models.find((model) => model.id === postTrainingModelId) : null) ??
+    heldModelsNeedingConfig[0] ??
+    null;
+  const postTrainingEstimate = getPostTrainingEstimate(postTrainingConfig);
+  const confirmDeprecateModel = confirmDeprecateModelId !== null
+    ? game.models.find((model) => model.id === confirmDeprecateModelId) ?? null
+    : null;
 
   return (
+    <>
     <div className="grid gap-5 xl:grid-cols-[1.1fr_1fr]">
 
       {/* ── LEFT COLUMN ── */}
@@ -741,6 +814,52 @@ export function LabScreen({
           </div>
         </Panel>
 
+        <Panel title="Post-Training Runs">
+          {postTrainingRuns.length === 0 ? (
+            <EmptyState title="No post-training work queued" body="Completed held models will appear here after you choose alignment, domain, and red-team scope." />
+          ) : (
+            <div className="space-y-3">
+              {postTrainingRuns.map((run) => {
+                const model = game.models.find((entry) => entry.id === run.modelId);
+                const progress = run.weeksTotal > 0 ? Math.min(100, (run.weeksElapsed / run.weeksTotal) * 100) : 0;
+                return (
+                  <div key={run.id} className="rounded-md border border-[#30363d] bg-[#161b22] p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-[#e6edf3]">
+                          {model ? `${model.name} v${formatVersion(model.version)}` : `Model #${run.modelId}`}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <Badge tone={run.config.rlhf ? "good" : "bad"}>{run.config.rlhf ? "RLHF" : "No RLHF"}</Badge>
+                          <Badge tone={run.config.domainFocus ? "warning" : "default"}>
+                            {run.config.domainFocus ? MODEL_GOALS[run.config.domainFocus].name : "No domain focus"}
+                          </Badge>
+                          <Badge tone={run.config.redTeam ? "good" : "bad"}>{run.config.redTeam ? "Red-team" : "No red-team"}</Badge>
+                        </div>
+                      </div>
+                      <div className="text-right font-mono text-xs text-[#8b949e]">
+                        {run.weeksElapsed} / {run.weeksTotal} wk
+                      </div>
+                    </div>
+                    <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#21262d]">
+                      <div className="h-1.5 rounded-full bg-[#d29922]" style={{ width: `${progress}%` }} />
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#8b949e]">
+                      <span>Trust {run.projectedTrustDelta >= 0 ? "+" : ""}{run.projectedTrustDelta}</span>
+                      {run.projectedGoalBoost ? (
+                        <span>{MODEL_GOALS[run.projectedGoalBoost.goalId].name} +{run.projectedGoalBoost.delta}</span>
+                      ) : null}
+                      {run.projectedSafetyIncidentRisk > 0 ? (
+                        <span className="text-[#f85149]">Safety risk +{pct(run.projectedSafetyIncidentRisk)}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+
         {/* Model Shelf */}
         <Panel title="Model Shelf">
           {game.models.length === 0 ? (
@@ -752,18 +871,28 @@ export function LabScreen({
                   <tr className="bg-[#161b22]">
                     <th className={TH}>Model</th>
                     <th className={TH}>Release Week</th>
-                    <th className={TH}>Cap</th>
+                    <th className={TH}>Lifecycle</th>
+                    <th className={TH}>Eval</th>
                     <th className={TH}>Inference</th>
                     <th className={TH}>Specs</th>
                     <th className={TH}>Market</th>
+                    <th className={TH}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {game.models.map((model) => {
+                    const labModel = model as LabModel;
                     const parentModel = getModelById(game, model.baseModelId);
                     const marketPosition = getMarketComparison(model.capability, game.marketStandard);
+                    const releaseWeek = getModelReleaseWeek(model);
+                    const lifecycle = getModelLifecycleStatus(labModel, postTrainingRuns);
+                    const expanded = expandedModelId === model.id;
+                    const maintenanceCost = labModel.maintenanceCostPerMonth ?? 0;
+                    const deployed = Object.values(game.products).some((product) => product.modelIds.includes(model.id));
+                    const canDeprecate = lifecycle === "Active" && deployed && Boolean(onDeprecateModel);
                     return (
-                      <tr key={model.id} className={TR}>
+                      <Fragment key={model.id}>
+                      <tr className={`${TR} cursor-pointer hover:bg-[#161b22]/60`} onClick={() => setExpandedModelId(expanded ? null : model.id)}>
                         <td className={TD}>
                           <div className="font-medium text-[#e6edf3]">#{model.id} {model.name}</div>
                           <div className="text-xs text-[#8b949e]">v{formatVersion(model.version)} · {MODEL_SIZES[model.sizeKey].name}</div>
@@ -772,10 +901,17 @@ export function LabScreen({
                           </div>
                         </td>
                         <td className={TD + " text-[#8b949e] whitespace-nowrap"}>
-                          W{model.weekBuilt ?? (model.monthBuilt - 1) * WEEKS_PER_MONTH + 1} / {monthLabelFromWeek(model.weekBuilt ?? (model.monthBuilt - 1) * WEEKS_PER_MONTH + 1)}
+                          W{releaseWeek} / {monthLabelFromWeek(releaseWeek)}
                         </td>
                         <td className={TD}>
-                          <span className="font-mono text-[#3fb950]">{model.capability}</span>
+                          <div className="flex flex-wrap gap-1.5">
+                            <Badge tone={getLifecycleTone(lifecycle)}>{lifecycle}</Badge>
+                            {maintenanceCost > 0 ? <Badge tone={deployed ? "warning" : "default"}>{money(maintenanceCost)} / mo</Badge> : null}
+                          </div>
+                        </td>
+                        <td className={TD}>
+                          <div className="font-mono text-[#3fb950]">{model.demonstratedCapability ?? model.capability}</div>
+                          <div className="mt-0.5 text-xs text-[#484f58]">drift {getCapabilityDriftLabel(labModel)}</div>
                         </td>
                         <td className={TD}>
                           <span className="font-mono text-[#d29922]">{model.inferenceCost}</span>
@@ -789,7 +925,57 @@ export function LabScreen({
                         <td className={TD}>
                           <Badge tone={marketPosition.tone}>{marketPosition.label}</Badge>
                         </td>
+                        <td className="px-3 py-2 text-right">
+                          <Button
+                            variant="ghost"
+                            disabled={!canDeprecate}
+                            onClick={() => {
+                              if (canDeprecate) setConfirmDeprecateModelId(model.id);
+                            }}
+                          >
+                            Deprecate
+                          </Button>
+                        </td>
                       </tr>
+                      {expanded ? (
+                        <tr className="border-t border-[#21262d] bg-[#161b22]/35">
+                          <td colSpan={8} className="px-3 py-3">
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <div className="rounded border border-[#30363d] bg-[#0d1117] p-3">
+                                <div className={SECTION_LABEL}>Internal Evaluation Score</div>
+                                <div className="font-mono text-xl text-[#e6edf3]">{labModel.trueCapability ?? model.capability}</div>
+                              </div>
+                              <div className="rounded border border-[#30363d] bg-[#0d1117] p-3">
+                                <div className={SECTION_LABEL}>Benchmark Score</div>
+                                <div className="font-mono text-xl text-[#3fb950]">{labModel.demonstratedCapability ?? model.capability}</div>
+                              </div>
+                              <div className="rounded border border-[#30363d] bg-[#0d1117] p-3">
+                                <div className={SECTION_LABEL}>Market Trust</div>
+                                <div className="font-mono text-xl text-[#d29922]">{(labModel.marketTrust ?? model.trust).toFixed(0)}</div>
+                              </div>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Badge tone={deployed ? "good" : "default"}>{deployed ? "Deployed" : "Not deployed"}</Badge>
+                              <Badge tone="default">Model trust {model.trust}</Badge>
+                              {labModel.pendingSafetyRisk && labModel.pendingSafetyRisk > 0 ? (
+                                <Badge tone="bad">Safety risk {pct(labModel.pendingSafetyRisk)}</Badge>
+                              ) : null}
+                              {lifecycle === "Post-Training" && !postTrainingRuns.some((run) => run.modelId === model.id) ? (
+                                <Button
+                                  variant="secondary"
+                                  onClick={() => {
+                                    setPostTrainingModelId(model.id);
+                                    setPostTrainingConfig(DEFAULT_POST_TRAINING_CONFIG);
+                                  }}
+                                >
+                                  Configure
+                                </Button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -800,5 +986,130 @@ export function LabScreen({
 
       </div>
     </div>
+
+    {modalModel ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0d1117]/85 px-4 py-6 backdrop-blur-sm">
+        <div className="w-full max-w-xl overflow-hidden rounded-md border border-[#d29922]/30 bg-[#161b22] shadow-2xl shadow-black/60">
+          <div className="border-b border-[#30363d] bg-[#1f1a0d] px-5 py-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d29922]">Post-Training Configuration</span>
+          </div>
+          <div className="p-5">
+            <div className="text-xl font-semibold text-[#e6edf3]">{modalModel.name} v{formatVersion(modalModel.version)}</div>
+            <div className="mt-1 text-sm text-[#8b949e]">Hold launch until alignment, domain tuning, and safety eval choices are set.</div>
+
+            <div className="mt-5 space-y-3">
+              <label className={FIELD_ROW}>
+                <span className="text-sm text-[#8b949e]">RLHF / alignment pass</span>
+                <input
+                  type="checkbox"
+                  checked={postTrainingConfig.rlhf}
+                  onChange={(event) => setPostTrainingConfig((current) => ({ ...current, rlhf: event.target.checked }))}
+                />
+              </label>
+
+              <div className={FIELD_ROW}>
+                <span className="text-sm text-[#8b949e]">Domain fine-tune</span>
+                <select
+                  value={postTrainingConfig.domainFocus ?? ""}
+                  onChange={(event) => setPostTrainingConfig((current) => ({ ...current, domainFocus: event.target.value ? event.target.value as ModelGoalId : null }))}
+                  className="w-52 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-sm text-[#e6edf3] outline-none focus:border-[#58a6ff]"
+                >
+                  <option value="">None</option>
+                  {Object.values(MODEL_GOALS).map((goal) => (
+                    <option key={goal.id} value={goal.id}>{goal.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <label className={FIELD_ROW}>
+                <span className="text-sm text-[#8b949e]">Red-team evaluation</span>
+                <input
+                  type="checkbox"
+                  checked={postTrainingConfig.redTeam}
+                  onChange={(event) => setPostTrainingConfig((current) => ({ ...current, redTeam: event.target.checked }))}
+                />
+              </label>
+
+              <div className="border-b border-[#161b22] py-2.5">
+                <div className="mb-1.5 flex items-center justify-between text-sm">
+                  <span className="text-[#8b949e]">Weeks allocated</span>
+                  <span className="font-mono text-xs text-[#e6edf3]">{postTrainingConfig.weeksAllocated} wk</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={8}
+                  step={1}
+                  value={postTrainingConfig.weeksAllocated}
+                  onChange={(event) => setPostTrainingConfig((current) => ({ ...current, weeksAllocated: Number(event.target.value) }))}
+                  className="w-full"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-2 rounded-md border border-[#30363d] bg-[#0d1117] p-3 text-sm md:grid-cols-3">
+              <div>
+                <div className="text-xs text-[#484f58]">Duration</div>
+                <div className="font-mono text-[#e6edf3]">{postTrainingEstimate.weeksTotal} wk</div>
+              </div>
+              <div>
+                <div className="text-xs text-[#484f58]">Trust</div>
+                <div className={`font-mono ${postTrainingEstimate.trustDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
+                  {postTrainingEstimate.trustDelta >= 0 ? "+" : ""}{postTrainingEstimate.trustDelta}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-[#484f58]">Safety risk</div>
+                <div className={`font-mono ${postTrainingEstimate.safetyRisk > 0 ? "text-[#f85149]" : "text-[#3fb950]"}`}>
+                  {pct(postTrainingEstimate.safetyRisk)}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                variant="good"
+                onClick={() => {
+                  onStartPostTraining(modalModel.id, postTrainingConfig);
+                  setPostTrainingModelId(null);
+                  setPostTrainingConfig(DEFAULT_POST_TRAINING_CONFIG);
+                }}
+              >
+                Start Post-Training
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : null}
+
+    {confirmDeprecateModel ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0d1117]/85 px-4 py-6 backdrop-blur-sm">
+        <div className="w-full max-w-md overflow-hidden rounded-md border border-[#f85149]/30 bg-[#161b22] shadow-2xl shadow-black/60">
+          <div className="border-b border-[#30363d] bg-[#220d0d] px-5 py-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#f85149]">Deprecate Model</span>
+          </div>
+          <div className="p-5">
+            <div className="text-lg font-semibold text-[#e6edf3]">{confirmDeprecateModel.name}</div>
+            <div className="mt-2 text-sm leading-6 text-[#8b949e]">
+              Deprecating stops new acquisition and begins migration away from this model.
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirmDeprecateModelId(null)}>Cancel</Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  onDeprecateModel?.(confirmDeprecateModel.id);
+                  setConfirmDeprecateModelId(null);
+                }}
+              >
+                Confirm
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }

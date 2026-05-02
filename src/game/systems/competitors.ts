@@ -65,7 +65,8 @@ function getGoalAverage(goals: TrainingConfig["goals"]) {
 }
 
 function getBestCapability(game: GameState) {
-  return game.models.length ? Math.max(...game.models.map((model) => model.capability)) : 0;
+  const publicModels = game.models.filter((model) => model.postTrainingComplete !== false && model.retired !== true);
+  return publicModels.length ? Math.max(...publicModels.map((model) => model.capability)) : 0;
 }
 
 export function getCompetitorCompanyDefinition(competitorId: string) {

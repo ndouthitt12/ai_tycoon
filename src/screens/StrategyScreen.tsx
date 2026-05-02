@@ -8,6 +8,23 @@ const TD = "px-3 py-2.5 align-top text-sm text-[#e6edf3]";
 const TR = "border-t border-[#21262d]";
 const FIELD_ROW = "flex items-center justify-between gap-4 border-b border-[#161b22] py-2.5 last:border-0";
 
+function readNestedNumber(source: unknown, path: string[]) {
+  let current: unknown = source;
+
+  for (const key of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return null;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+
+  return typeof current === "number" && Number.isFinite(current) ? current : null;
+}
+
+function formatSignedDelta(value: number) {
+  return `${value >= 0 ? "+" : ""}${value}`;
+}
+
 export function StrategyScreen({
   game,
   onUpdateMarketingBudget,
@@ -28,6 +45,24 @@ export function StrategyScreen({
   const nextBoardReviewWeeks = WEEKS_PER_QUARTER - ((currentWeek - 1) % WEEKS_PER_QUARTER);
   const chatbotSpendMultiplier = getMarketingSpendMultiplier(game.marketingBudgetMillions, 1.0);
   const apiSpendMultiplier = getMarketingSpendMultiplier(game.marketingBudgetMillions, 3.0);
+  const weeklyTrustDelta = readNestedNumber(game, ["lastWeekTrustDelta"])
+    ?? readNestedNumber(game, ["weeklyTrustDelta"])
+    ?? readNestedNumber(game, ["lastWeekCompany", "trustDelta"])
+    ?? readNestedNumber(game, ["lastWeek", "trustDelta"]);
+  const weeklyConsumerDelta = readNestedNumber(game, ["lastWeekDistributionDelta", "consumer"])
+    ?? readNestedNumber(game, ["weeklyDistributionDelta", "consumer"])
+    ?? readNestedNumber(game, ["lastWeekCompany", "distributionDelta", "consumer"])
+    ?? readNestedNumber(game, ["lastWeek", "distributionDelta", "consumer"]);
+  const weeklyEnterpriseDelta = readNestedNumber(game, ["lastWeekDistributionDelta", "enterprise"])
+    ?? readNestedNumber(game, ["weeklyDistributionDelta", "enterprise"])
+    ?? readNestedNumber(game, ["lastWeekCompany", "distributionDelta", "enterprise"])
+    ?? readNestedNumber(game, ["lastWeek", "distributionDelta", "enterprise"]);
+  const displayedTrustDelta = weeklyTrustDelta ?? game.lastMonth.trustDelta;
+  const displayedConsumerDelta = weeklyConsumerDelta ?? game.lastMonth.distributionDelta.consumer;
+  const displayedEnterpriseDelta = weeklyEnterpriseDelta ?? game.lastMonth.distributionDelta.enterprise;
+  const trustDeltaLabel = weeklyTrustDelta !== null ? "last week" : "completed month";
+  const consumerDeltaLabel = weeklyConsumerDelta !== null ? "last week" : "completed month";
+  const enterpriseDeltaLabel = weeklyEnterpriseDelta !== null ? "last week" : "completed month";
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
@@ -72,8 +107,8 @@ export function StrategyScreen({
               <div className={`mt-1.5 font-mono text-xl font-semibold ${game.trust >= 60 ? "text-[#3fb950]" : game.trust >= 45 ? "text-[#d29922]" : "text-[#f85149]"}`}>
                 {game.trust.toFixed(1)}
               </div>
-              <div className={`mt-1 font-mono text-xs ${game.lastMonth.trustDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
-                {game.lastMonth.trustDelta >= 0 ? "+" : ""}{game.lastMonth.trustDelta} completed month
+              <div className={`mt-1 font-mono text-xs ${displayedTrustDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
+                {formatSignedDelta(displayedTrustDelta)} {trustDeltaLabel}
               </div>
               <div className="mt-2">
                 <Meter label="" value={game.trust} tone={game.trust >= 60 ? "good" : game.trust >= 45 ? "warning" : "bad"} />
@@ -83,7 +118,7 @@ export function StrategyScreen({
               <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6e7681]">Consumer Dist</div>
               <div className="mt-1.5 font-mono text-xl font-semibold text-[#e6edf3]">{game.distribution.consumer.toFixed(1)}</div>
               <div className="mt-1 font-mono text-xs text-[#484f58]">
-                {game.lastMonth.distributionDelta.consumer >= 0 ? "+" : ""}{game.lastMonth.distributionDelta.consumer} completed month
+                {formatSignedDelta(displayedConsumerDelta)} {consumerDeltaLabel}
               </div>
               <div className="mt-2"><Meter label="" value={game.distribution.consumer} /></div>
             </div>
@@ -91,7 +126,7 @@ export function StrategyScreen({
               <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6e7681]">Enterprise Dist</div>
               <div className="mt-1.5 font-mono text-xl font-semibold text-[#e6edf3]">{game.distribution.enterprise.toFixed(1)}</div>
               <div className="mt-1 font-mono text-xs text-[#484f58]">
-                {game.lastMonth.distributionDelta.enterprise >= 0 ? "+" : ""}{game.lastMonth.distributionDelta.enterprise} completed month
+                {formatSignedDelta(displayedEnterpriseDelta)} {enterpriseDeltaLabel}
               </div>
               <div className="mt-2"><Meter label="" value={game.distribution.enterprise} /></div>
             </div>
@@ -274,21 +309,21 @@ export function StrategyScreen({
           ) : (
             <>
               <div className={FIELD_ROW}>
-                <span className="text-sm text-[#8b949e]">Trust Drift</span>
-                <span className={`font-mono text-sm ${game.lastMonth.trustDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
-                  {game.lastMonth.trustDelta >= 0 ? "+" : ""}{game.lastMonth.trustDelta}
+                <span className="text-sm text-[#8b949e]">Trust Drift ({trustDeltaLabel})</span>
+                <span className={`font-mono text-sm ${displayedTrustDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
+                  {formatSignedDelta(displayedTrustDelta)}
                 </span>
               </div>
               <div className={FIELD_ROW}>
-                <span className="text-sm text-[#8b949e]">Consumer Dist Delta</span>
-                <span className={`font-mono text-sm ${game.lastMonth.distributionDelta.consumer >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
-                  {game.lastMonth.distributionDelta.consumer >= 0 ? "+" : ""}{game.lastMonth.distributionDelta.consumer}
+                <span className="text-sm text-[#8b949e]">Consumer Dist Delta ({consumerDeltaLabel})</span>
+                <span className={`font-mono text-sm ${displayedConsumerDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
+                  {formatSignedDelta(displayedConsumerDelta)}
                 </span>
               </div>
               <div className={FIELD_ROW}>
-                <span className="text-sm text-[#8b949e]">Enterprise Dist Delta</span>
-                <span className={`font-mono text-sm ${game.lastMonth.distributionDelta.enterprise >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
-                  {game.lastMonth.distributionDelta.enterprise >= 0 ? "+" : ""}{game.lastMonth.distributionDelta.enterprise}
+                <span className="text-sm text-[#8b949e]">Enterprise Dist Delta ({enterpriseDeltaLabel})</span>
+                <span className={`font-mono text-sm ${displayedEnterpriseDelta >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}`}>
+                  {formatSignedDelta(displayedEnterpriseDelta)}
                 </span>
               </div>
               <div className={FIELD_ROW}>

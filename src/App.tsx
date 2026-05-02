@@ -12,6 +12,7 @@ import {
   bumpTrainingVersionName,
   calculateRunPreview,
   chooseBoardDirective,
+  copyGame,
   createInitialGame,
   getHeadcountTotal,
   getPayroll,
@@ -46,7 +47,10 @@ import {
   takeLoan,
   WEEKS_PER_MONTH,
 } from "./game/sim";
-import { AppState, ArchetypeId, BoardDirectiveId, DataTierId, RoleId, ScreenId, UpgradeId, SubscriptionPlan } from "./game/types";
+import * as simApi from "./game/sim";
+import { startPostTraining } from "./game/systems/postTraining";
+import * as modelSystems from "./game/systems/models";
+import { AppState, ArchetypeId, BoardDirectiveId, DataTierId, PostTrainingConfig, RoleId, ScreenId, UpgradeId, SubscriptionPlan } from "./game/types";
 import { AppShell, Badge, Button, KpiCard, NavTab } from "./components/ui";
 import { AdminScreen } from "./screens/AdminScreen";
 import { ArchetypeSelection } from "./screens/ArchetypeSelection";
@@ -62,6 +66,52 @@ const INITIAL_STATE: AppState = {
   game: null,
 };
 
+function readNumberField(source: unknown, ...keys: string[]) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const record = source as Record<string, unknown>;
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function readRecordField(source: unknown, ...keys: string[]) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const record = source as Record<string, unknown>;
+
+  for (const key of keys) {
+    const value = record[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+
+  return null;
+}
+
+function readOperatingCashflowTotal(source: unknown) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const record = source as Record<string, unknown>;
+  const direct = readNumberField(record, "netCashflow", "cashflow", "profit");
+  if (direct !== null) return direct;
+
+  const cloudRentalRevenue = readNumberField(record, "cloudRentalRevenue") ?? 0;
+  const payroll = readNumberField(record, "payroll") ?? 0;
+  const marketingSpend = readNumberField(record, "marketingSpend") ?? 0;
+  const baseOpsCost = readNumberField(record, "baseOpsCost") ?? 0;
+  const loanPayments = readNumberField(record, "loanPayments") ?? 0;
+  const computeReservedCost = readNumberField(record, "computeReservedCost") ?? 0;
+  const developmentCost = readNumberField(record, "developmentCost") ?? 0;
+  const maintenanceCost = readNumberField(record, "maintenanceCost") ?? 0;
+
+  return cloudRentalRevenue - payroll - marketingSpend - baseOpsCost - loanPayments - computeReservedCost - developmentCost - maintenanceCost;
+}
+
 export default function AICompanyTycoonStep2() {
   const [app, setApp] = useState<AppState>(INITIAL_STATE);
   const game = app.game;
@@ -73,6 +123,24 @@ export default function AICompanyTycoonStep2() {
   const payroll = game ? getPayroll(game) : 0;
   const runwayMonths = game ? getRunwayMonths(game) : 0;
   const arr = game ? (game.lastMonth.revenue || 0) * 12 : 0;
+  const lastWeekRevenue = game ? (readNumberField(game, "lastWeekRevenue", "weeklyRevenue") ?? readNumberField(game.lastWeek, "revenue") ?? 0) : 0;
+  const lastWeekComputeCost = game ? (readNumberField(game, "lastWeekComputeCost", "weeklyComputeCost") ?? readNumberField(game.lastWeek, "computeCost") ?? 0) : 0;
+  const lastWeekProfit = game ? (readNumberField(game, "lastWeekProfit", "weeklyProfit") ?? readNumberField(game.lastWeek, "profit") ?? Math.round(lastWeekRevenue - lastWeekComputeCost)) : 0;
+  const lastWeekCashflowRecord = game ? readRecordField(game, "lastWeekCashflow", "weeklyCashflow") : null;
+  const lastWeekCashflow = game
+    ? readNumberField(game, "lastWeekCashflow", "weeklyCashflow")
+      ?? readOperatingCashflowTotal(lastWeekCashflowRecord)
+    : null;
+  const currentMonthCashflow = game
+    ? game.currentMonthCashflow.cloudRentalRevenue
+      - game.currentMonthCashflow.payroll
+      - game.currentMonthCashflow.marketingSpend
+      - game.currentMonthCashflow.baseOpsCost
+      - game.currentMonthCashflow.loanPayments
+      - game.currentMonthCashflow.computeReservedCost
+      - (game.currentMonthCashflow.developmentCost ?? 0)
+      - (game.currentMonthCashflow.maintenanceCost ?? 0)
+    : 0;
 
   function selectArchetype(archetypeId: ArchetypeId) {
     setApp({
@@ -99,6 +167,44 @@ export default function AICompanyTycoonStep2() {
     setApp({
       screen: "overview",
       game: null,
+    });
+  }
+
+  function handleStartPostTraining(modelId: number, config: PostTrainingConfig) {
+    updateGame((current) => {
+      const next = copyGame(current);
+      startPostTraining(next, modelId, config);
+      return next;
+    });
+  }
+
+  function handleDeprecateModel(modelId: number) {
+    updateGame((current) => {
+      const next = copyGame(current);
+      const deprecateModel =
+        (modelSystems as unknown as { deprecateModel?: (game: typeof next, modelId: number) => void }).deprecateModel ??
+        (simApi as unknown as { deprecateModel?: (game: typeof next, modelId: number) => void }).deprecateModel;
+
+      if (deprecateModel) {
+        deprecateModel(next, modelId);
+        return next;
+      }
+
+      const model = next.models.find((entry) => entry.id === modelId) as (typeof next.models[number] & {
+        deprecated?: boolean;
+        deprecationStartWeek?: number | null;
+      }) | undefined;
+      if (!model || model.deprecated) return next;
+
+      model.deprecated = true;
+      model.deprecationStartWeek = next.week;
+      next.notifications.unshift({
+        id: next.nextId++,
+        text: `${model.name} marked for deprecation. Users will migrate as lifecycle support lands.`,
+        tone: "warning",
+      });
+      next.notifications = next.notifications.slice(0, 12);
+      return next;
     });
   }
 
@@ -156,7 +262,12 @@ export default function AICompanyTycoonStep2() {
           <div className="grid grid-cols-3 border-b border-[#21262d] lg:grid-cols-6">
             <KpiCard label="Cash" value={money(game.cash)} tone={game.cash > 12000000 ? "good" : game.cash > 5000000 ? "warning" : "bad"} />
             <KpiCard label="ARR" value={money(arr)} tone={arr >= 10000000 ? "good" : "default"} />
-            <KpiCard label="Completed Month Profit" value={money(game.lastMonth.profit)} tone={game.lastMonth.profit > 0 ? "good" : game.lastMonth.profit < -500000 ? "bad" : "warning"} />
+            <KpiCard
+              label="Last Week Gross Profit"
+              value={money(lastWeekProfit)}
+              subvalue={lastWeekCashflow !== null ? `Cashflow ${money(lastWeekCashflow)}` : `MTD cashflow ${money(currentMonthCashflow)}`}
+              tone={lastWeekProfit > 0 ? "good" : lastWeekProfit < -500000 ? "bad" : "warning"}
+            />
             <KpiCard label="Runway" value={runwayMonths === Infinity ? "∞" : `${runwayMonths.toFixed(1)} mo`} subvalue={`Payroll/mo ${money(payroll)}`} tone={runwayMonths === Infinity ? "good" : runwayMonths > 10 ? "warning" : "bad"} />
             <KpiCard label="Trust" value={game.trust.toFixed(1)} subvalue={`Board ${game.boardPressure.toFixed(1)}`} tone={game.trust >= 60 ? "good" : game.trust >= 45 ? "warning" : "bad"} />
             <KpiCard label="Headcount" value={headcountTotal} subvalue={`Std ${game.marketStandard}`} tone="default" />
@@ -232,6 +343,8 @@ export default function AICompanyTycoonStep2() {
               onUpdateTrainingConfig={(patch) => updateGame((current) => updateTrainingConfig(current, patch))}
               onBumpVersion={() => updateGame(bumpTrainingVersionName)}
               onLaunchRun={() => updateGame(launchRun)}
+              onStartPostTraining={handleStartPostTraining}
+              onDeprecateModel={handleDeprecateModel}
             />
           ) : null}
 

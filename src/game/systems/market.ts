@@ -1,5 +1,5 @@
 import { COMPETITOR_COMPANIES } from "../defs";
-import { CohortDef, CohortId, CompetitorModelState, GameState, ModelGoalId, ModelState, ProductPeriodSnapshot, ProductState, ProductTypeId, ReliabilityTierId, SubscriptionPlan } from "../types";
+import { CohortDef, CohortId, CompetitorModelState, GameState, ModelGoalId, ModelPerformanceState, ModelState, ProductPeriodSnapshot, ProductState, ProductTypeId, ReliabilityTierId, SubscriptionPlan } from "../types";
 import { getMonthIndexFromWeek, WEEKS_PER_MONTH } from "../time";
 import {
   API_MODEL_ACQUISITION_DECAY,
@@ -27,11 +27,14 @@ import {
   FRICTION_MAX_MULTIPLIER,
   FRICTION_MAX_TENURE_WEEKS,
   INADEQUATE_PLAN_APPEAL_MULTIPLIER,
+  DEPRECATION_CHURN_BOOST_PER_WEEK,
+  DEPRECATION_MIGRATION_WEEKS,
   MODEL_CHURN_CEILING,
   MODEL_CHURN_FLOOR,
   MODEL_RECENCY_MONTH_WINDOW,
   MODEL_RECENCY_SCORE_FLOOR,
   PLAN_PRICE_TIEBREAKER_COEFFICIENT,
+  POST_TRAINING_MEDICAL_GOV_TRUST_GATE,
   SERVING_HARDWARE_BASE_EFFICIENCY,
   SERVING_HARDWARE_UPGRADE_EFFICIENCY,
   SERVING_VARIABLE_COST_PER_POD,
@@ -87,7 +90,7 @@ function getModelAgeMonths(game: GameState, model: ModelState | CompetitorModelS
 function getProductModels(game: GameState, product: ProductState) {
   return product.modelIds
     .map((id) => getModelById(game, id))
-    .filter((model): model is NonNullable<ReturnType<typeof getModelById>> => Boolean(model));
+    .filter((model): model is NonNullable<ReturnType<typeof getModelById>> => Boolean(model && model.postTrainingComplete !== false && model.retired !== true));
 }
 
 function getModelPrice(product: ProductState, modelId: number) {
@@ -103,11 +106,19 @@ function getGoalShare(goals: Record<ModelGoalId, number>, key: ModelGoalId) {
   return goals[key] / total;
 }
 
+function isPlayerModel(model: ModelState | CompetitorModelState): model is ModelState {
+  return "inferenceCost" in model && typeof model.inferenceCost === "number";
+}
+
+function isPublicPlayerModel(model: ModelState) {
+  return model.postTrainingComplete !== false && model.retired !== true;
+}
+
 function getModelGoalScores(model: ModelState | CompetitorModelState) {
-  const capabilitySignal = model.capability;
-  const speedSignal = "inferenceCost" in model ? clamp(100 - model.inferenceCost * 14, 20, 98) : clamp(40 + model.capability * 0.4, 20, 98);
+  const capabilitySignal = getModelCapabilitySignal(model);
+  const speedSignal = isPlayerModel(model) ? clamp(100 - model.inferenceCost * 14, 20, 98) : clamp(40 + model.capability * 0.4, 20, 98);
   const contextSignal = clamp(20 + model.contextWindow * 0.9, 20, 98);
-  const trustSignal = "trust" in model ? model.trust : 60;
+  const trustSignal = getModelMarketTrustSignal(model);
 
   return {
     speed: Math.max(15, 18 + speedSignal * 0.56 + capabilitySignal * 0.14 + getGoalShare(model.goals, "speed") * 26),
@@ -149,17 +160,33 @@ export function getMarketComparison(capability: number, marketStandard: number) 
   return { delta, tone, label };
 }
 
-export function createDefaultModelPerformance() {
+export function createDefaultModelPerformance(): ModelPerformanceState {
   return {
     totalRevenue: 0,
+    totalProfit: 0,
+    totalTokenUsageMillions: 0,
+    totalComputeCost: 0,
     lastWeekRevenue: 0,
+    lastWeekTokenUsageMillions: 0,
+    lastWeekComputeCost: 0,
+    lastWeekProfit: 0,
     lastWeekAcquisition: 0,
     lastWeekChurn: 0,
     lastWeekUsers: 0,
     lastMonthRevenue: 0,
+    lastMonthTokenUsageMillions: 0,
+    lastMonthComputeCost: 0,
+    lastMonthProfit: 0,
     lastMonthAcquisition: 0,
     lastMonthChurn: 0,
     lastMonthUsers: 0,
+  };
+}
+
+function hydrateModelPerformance(performance?: Partial<ModelPerformanceState>): ModelPerformanceState {
+  return {
+    ...createDefaultModelPerformance(),
+    ...(performance ?? {}),
   };
 }
 
@@ -170,7 +197,7 @@ export function getBlendedModelMetrics(game: GameState, product: ProductState) {
   const averageCapability = models.reduce((sum, model) => sum + model.capability, 0) / models.length;
   const bestCapability = Math.max(...models.map((model) => model.capability));
   const inferenceCost = models.reduce((sum, model) => sum + model.inferenceCost, 0) / models.length;
-  const trust = models.reduce((sum, model) => sum + model.trust, 0) / models.length;
+  const trust = models.reduce((sum, model) => sum + getModelMarketTrustSignal(model), 0) / models.length;
   const contextWindow = models.reduce((sum, model) => sum + model.contextWindow, 0) / models.length;
   const averagePrice = models.reduce((sum, model) => sum + getModelPrice(product, model.id), 0) / models.length;
   const averageAge = models.reduce((sum, model) => sum + getModelAgeMonths(game, model), 0) / models.length;
@@ -407,10 +434,10 @@ export function getProductComputeUsage(
   const effectiveTokensPerPod = Number(
     Math.max(
       18,
-      (
+      Number((
         (CHATBOT_TOKENS_PER_POD_MILLIONS * batchingEfficiency * hardwareEfficiency) /
         (contextPenalty * modelWeightPenalty * strategyCapacityPenalty)
-      ).toFixed(2),
+      ).toFixed(2)),
     ),
   );
   const burstTokensMillions = Number((totalTokensMillions * burstMultiplier).toFixed(2));
@@ -441,6 +468,18 @@ export function getProductComputeUsage(
   };
 }
 
+function getModelCapabilitySignal(model: ModelState | CompetitorModelState): number {
+  if (isPlayerModel(model)) {
+    return Math.min(model.demonstratedCapability ?? model.capability, model.trueCapability + 5);
+  }
+  return model.capability;
+}
+
+function getModelMarketTrustSignal(model: ModelState | CompetitorModelState): number {
+  if (isPlayerModel(model)) return model.marketTrust;
+  return 70;
+}
+
 export function getProjectedServingDemand(game: GameState) {
   const projectedDemand = Object.values(game.products).reduce((sum, product) => {
     const metrics = getBlendedModelMetrics(game, product);
@@ -465,7 +504,7 @@ export function getMarketModelTable(game: GameState) {
     }));
   });
 
-  const playerRows = game.models.map((model) => ({
+  const playerRows = game.models.filter(isPublicPlayerModel).map((model) => ({
     owner: "Your Company",
     id: model.id,
     name: model.name,
@@ -489,7 +528,10 @@ export function getMarketModelTable(game: GameState) {
       marketLabel: getMarketComparison(entry.capability, game.marketStandard).label,
       marketTone: getMarketComparison(entry.capability, game.marketStandard).tone,
     }))
-    .sort((a, b) => getModelWeekBuilt(b) - getModelWeekBuilt(a) || b.capability - a.capability);
+    .sort((a, b) => {
+      const ageDelta = (b.releaseWeek ?? b.weekBuilt ?? 1) - (a.releaseWeek ?? a.weekBuilt ?? 1);
+      return ageDelta || b.capability - a.capability;
+    });
 }
 
 export function getMarketCompanyTable(game: GameState) {
@@ -513,8 +555,9 @@ export function getMarketCompanyTable(game: GameState) {
     };
   });
 
-  const playerTopModel = game.models.length
-    ? [...game.models].sort((a, b) => b.capability - a.capability)[0]
+  const publicPlayerModels = game.models.filter(isPublicPlayerModel);
+  const playerTopModel = publicPlayerModels.length
+    ? [...publicPlayerModels].sort((a, b) => b.capability - a.capability)[0]
     : null;
 
   const playerRow = {
@@ -523,8 +566,8 @@ export function getMarketCompanyTable(game: GameState) {
     priorYearRevenue: Math.round(game.lastMonth.revenue * 12),
     priorYearProfit: Math.round(game.lastMonth.profit * 12),
     topModel: playerTopModel ? `${playerTopModel.name} v${formatVersion(playerTopModel.version)}` : "No flagship",
-    averageCapability: game.models.length
-      ? Number((game.models.reduce((sum, model) => sum + model.capability, 0) / game.models.length).toFixed(1))
+    averageCapability: publicPlayerModels.length
+      ? Number((publicPlayerModels.reduce((sum, model) => sum + model.capability, 0) / publicPlayerModels.length).toFixed(1))
       : 0,
   };
 
@@ -607,6 +650,7 @@ export function settleGlobalMarket(game: GameState, servingPressure: number, cad
     isPlayer: boolean;
     productType?: ProductTypeId;
     salesMultiplier: number;
+    deprecating?: boolean;
   }[] = [];
 
   (["chatbot", "api"] as ProductTypeId[]).forEach((type) => {
@@ -628,16 +672,18 @@ export function settleGlobalMarket(game: GameState, servingPressure: number, cad
 
     product.modelIds.forEach((modelId) => {
       const model = getModelById(game, modelId);
-      if (model) {
-        contenders.push({
-          id: `player_${type}_${model.id}`,
-          model,
-          price: product.modelPrices[model.id] ?? productPrice,
-          isPlayer: true,
-          productType: type,
-          salesMultiplier: visibility,
-        });
-      }
+      if (!model || model.postTrainingComplete === false || model.retired === true) return;
+
+      const isDeprecated = model.deprecated === true;
+      contenders.push({
+        id: `player_${type}_${model.id}`,
+        model,
+        price: product.modelPrices[model.id] ?? productPrice,
+        isPlayer: true,
+        productType: type,
+        salesMultiplier: isDeprecated ? 0 : visibility,
+        deprecating: isDeprecated,
+      });
     });
   });
 
@@ -692,13 +738,19 @@ export function settleGlobalMarket(game: GameState, servingPressure: number, cad
       if (contender.productType === "api" && cohort.category !== "Business") {
         return { contender, appeal: 0, options: [] as MarketPlanOption[] };
       }
+      if (
+        (cohort.id === "medical" || cohort.id === "government") &&
+        getModelMarketTrustSignal(model) < POST_TRAINING_MEDICAL_GOV_TRUST_GATE
+      ) {
+        return { contender, appeal: 0, options: [] as MarketPlanOption[] };
+      }
 
       let weightedReliabilityScore = 1.0;
       Object.entries(cohort.reliabilityWeights).forEach(([tier, weight]) => {
         weightedReliabilityScore += (model.reliability[tier as ReliabilityTierId] || 0) * (weight as number);
       });
 
-      let baseAppeal = (model.capability * weightedReliabilityScore) * cohort.baseCapabilityWeight;
+      let baseAppeal = (getModelCapabilitySignal(model) * weightedReliabilityScore) * cohort.baseCapabilityWeight;
       Object.entries(cohort.weights).forEach(([goal, weight]) => {
         if ((weight as number) > 0 && model.goals[goal as ModelGoalId] !== undefined) {
           baseAppeal += model.goals[goal as ModelGoalId] * (weight as number) * 10;
@@ -801,7 +853,26 @@ export function settleGlobalMarket(game: GameState, servingPressure: number, cad
           : rawDelta < 0
             ? Math.abs(currentUsers * getCadenceRate(0.05, cadence)) / frictionMultiplier
             : 0;
-      const nextUsers = Math.max(0, currentUsers + rawDelta - expectedChurn);
+      const deprecationChurn =
+        contender.deprecating && "deprecationStartWeek" in contender.model
+          ? currentUsers * getCadenceRate(
+              Math.min(
+                1,
+                Math.max(1, getCompatibleWeek(game) - (contender.model.deprecationStartWeek ?? getCompatibleWeek(game))) *
+                  DEPRECATION_CHURN_BOOST_PER_WEEK,
+              ),
+              cadence,
+            )
+          : 0;
+      const migrationFloor =
+        contender.deprecating && "deprecationStartWeek" in contender.model
+          ? Math.max(
+              0,
+              currentUsers * (1 - clamp((getCompatibleWeek(game) - (contender.model.deprecationStartWeek ?? getCompatibleWeek(game))) / DEPRECATION_MIGRATION_WEEKS, 0, 1)),
+            )
+          : Infinity;
+      const marketNextUsers = Math.max(0, currentUsers + rawDelta - expectedChurn - deprecationChurn);
+      const nextUsers = contender.deprecating ? Math.min(marketNextUsers, migrationFloor) : marketNextUsers;
       const delta = nextUsers - currentUsers;
 
       if (contender.isPlayer && contender.productType) {
@@ -830,6 +901,19 @@ export function settleGlobalMarket(game: GameState, servingPressure: number, cad
 
       contender.model.subscribersByCohort[cohort.id as CohortId] = nextUsers;
       updateCohortTenure(contender.model, cohort.id as CohortId, nextUsers);
+    });
+  });
+
+  game.models.forEach((model) => {
+    if (!model.deprecated || model.retired) return;
+    const remainingUsers = Object.values(model.subscribersByCohort).reduce((sum, users) => sum + users, 0);
+    if (remainingUsers >= 1) return;
+
+    model.retired = true;
+    (["chatbot", "api"] as ProductTypeId[]).forEach((type) => {
+      const product = game.products[type];
+      product.modelIds = product.modelIds.filter((modelId) => modelId !== model.id);
+      delete product.modelPrices[String(model.id)];
     });
   });
 
@@ -871,7 +955,7 @@ export function updateModelPerformance(
 ) {
   const rollupMonth = options.rollupMonth ?? false;
   const nextPerformance: GameState["modelPerformance"] = Object.fromEntries(
-    game.models.map((model) => [String(model.id), { ...(game.modelPerformance[String(model.id)] ?? createDefaultModelPerformance()) }]),
+    game.models.map((model) => [String(model.id), hydrateModelPerformance(game.modelPerformance[String(model.id)])]),
   );
   const churnWeightByModel: Record<string, number> = {};
   const churnTotalByModel: Record<string, number> = {};
@@ -880,12 +964,18 @@ export function updateModelPerformance(
   Object.keys(nextPerformance).forEach((modelId) => {
     if (!rollupMonth) {
       nextPerformance[modelId].lastWeekRevenue = 0;
+      nextPerformance[modelId].lastWeekTokenUsageMillions = 0;
+      nextPerformance[modelId].lastWeekComputeCost = 0;
+      nextPerformance[modelId].lastWeekProfit = 0;
       nextPerformance[modelId].lastWeekAcquisition = 0;
       nextPerformance[modelId].lastWeekChurn = 0;
       nextPerformance[modelId].lastWeekUsers = 0;
     }
     if (rollupMonth) {
       nextPerformance[modelId].lastMonthRevenue = 0;
+      nextPerformance[modelId].lastMonthTokenUsageMillions = 0;
+      nextPerformance[modelId].lastMonthComputeCost = 0;
+      nextPerformance[modelId].lastMonthProfit = 0;
       nextPerformance[modelId].lastMonthAcquisition = 0;
       nextPerformance[modelId].lastMonthChurn = 0;
       nextPerformance[modelId].lastMonthUsers = 0;
@@ -901,6 +991,8 @@ export function updateModelPerformance(
     const periodAcquisition = period?.acquisition ?? product.acquisition;
     const periodChurn = period?.churn ?? product.churn;
     const periodRevenue = period?.revenue ?? product.revenue;
+    const periodTokenUsageMillions = period?.tokenUsageMillions ?? product.tokenUsageMillions;
+    const periodComputeCost = period?.computeCost ?? product.computeCost;
     const rawEndingUsers = Math.max(0, periodUsers / monthlyUserMultiplier);
     const rawStartingUsers =
       periodChurn < 0.999
@@ -929,8 +1021,11 @@ export function updateModelPerformance(
       const key = String(modelId);
       const performance = nextPerformance[key] ?? createDefaultModelPerformance();
       const modelPrice = product.modelPrices[key] ?? product.price;
-      const modelRevenue =
-        totalLinePrice > 0 ? periodRevenue * (modelPrice / totalLinePrice) : periodRevenue / Math.max(1, modelCount);
+      const revenueShare = totalLinePrice > 0 ? modelPrice / totalLinePrice : 1 / Math.max(1, modelCount);
+      const modelRevenue = periodRevenue * revenueShare;
+      const modelTokenUsageMillions = periodTokenUsageMillions * revenueShare;
+      const modelComputeCost = periodComputeCost * revenueShare;
+      const modelProfit = modelRevenue - modelComputeCost;
       const acquisitionShare = periodAcquisition * (acquisitionWeights[key] / Math.max(0.0001, totalWeight));
       const churnDelta = (modelAges[key] - avgAge) * tuning.churnCoefficient;
       const modelChurn = clamp(periodChurn + churnDelta, MODEL_CHURN_FLOOR, MODEL_CHURN_CEILING);
@@ -940,11 +1035,20 @@ export function updateModelPerformance(
 
       if (rollupMonth) {
         performance.lastMonthRevenue = Math.round(performance.lastMonthRevenue + modelRevenue);
+        performance.lastMonthTokenUsageMillions = Number((performance.lastMonthTokenUsageMillions + modelTokenUsageMillions).toFixed(2));
+        performance.lastMonthComputeCost = Math.round(performance.lastMonthComputeCost + modelComputeCost);
+        performance.lastMonthProfit = Math.round(performance.lastMonthProfit + modelProfit);
         performance.lastMonthAcquisition = Number((performance.lastMonthAcquisition + acquisitionShare).toFixed(1));
         performance.lastMonthUsers = Number((performance.lastMonthUsers + endingUsersForModel).toFixed(1));
       } else {
         performance.totalRevenue = Math.round(performance.totalRevenue + modelRevenue);
+        performance.totalTokenUsageMillions = Number((performance.totalTokenUsageMillions + modelTokenUsageMillions).toFixed(2));
+        performance.totalComputeCost = Math.round(performance.totalComputeCost + modelComputeCost);
+        performance.totalProfit = Math.round(performance.totalProfit + modelProfit);
         performance.lastWeekRevenue = Math.round(performance.lastWeekRevenue + modelRevenue);
+        performance.lastWeekTokenUsageMillions = Number((performance.lastWeekTokenUsageMillions + modelTokenUsageMillions).toFixed(2));
+        performance.lastWeekComputeCost = Math.round(performance.lastWeekComputeCost + modelComputeCost);
+        performance.lastWeekProfit = Math.round(performance.lastWeekProfit + modelProfit);
         performance.lastWeekAcquisition = Number((performance.lastWeekAcquisition + acquisitionShare).toFixed(1));
         performance.lastWeekUsers = Number((performance.lastWeekUsers + endingUsersForModel).toFixed(1));
       }

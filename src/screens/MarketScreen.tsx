@@ -5,6 +5,8 @@ import { WEEKS_PER_MONTH, formatBigContext, formatBigMemory, formatBigParams, fo
 import { CohortId, GameState } from "../game/types";
 import { Badge, EmptyState, Panel, SegmentedControl, StatRow } from "../components/ui";
 
+const MATURITY_FULL_WEEKS_FALLBACK = 208;
+
 type ModelSortKey =
   | "owner"
   | "name"
@@ -56,6 +58,15 @@ export function MarketScreen({ game }: { game: GameState }) {
       .reduce((sum, modifier) => sum + modifier.intensity, 0);
   const marketModels = getMarketModelTable(game);
   const marketCompanies = getMarketCompanyTable(game);
+  const driftState = game as GameState & {
+    macroPressure?: number;
+    macroPressureWeeksRemaining?: number;
+    marketMaturityWeeks?: number;
+  };
+  const maturityWeeks = driftState.marketMaturityWeeks ?? Math.max(0, game.week - 1);
+  const maturityPct = Math.max(0, Math.min(100, (maturityWeeks / MATURITY_FULL_WEEKS_FALLBACK) * 100));
+  const macroPressure = driftState.macroPressure ?? 0;
+  const hasMacroPressure = "macroPressure" in driftState || macroPressure > 0;
   
   const sortedMarketCompanies = [...marketCompanies].sort((left, right) => {
     const leftValue = left[companySort.key];
@@ -250,6 +261,14 @@ export function MarketScreen({ game }: { game: GameState }) {
                 <StatRow label="Market Standard" value={game.marketStandard} tone="warning" />
                 <StatRow label="Pricing Pressure" value={pricingPressure.toFixed(2)} tone={pricingPressure > 0 ? "warning" : "good"} />
                 <StatRow label="Commoditization" value={commoditization.toFixed(2)} tone={commoditization > 0 ? "bad" : "good"} />
+                <StatRow label="Market Maturity" value={`${maturityPct.toFixed(0)}%`} tone={maturityPct >= 70 ? "warning" : "default"} />
+                {hasMacroPressure ? (
+                  <StatRow
+                    label="Macro Pressure"
+                    value={macroPressure > 0 ? `${(macroPressure * 100).toFixed(0)}% / ${Math.max(0, driftState.macroPressureWeeksRemaining ?? 0)} wk` : "Calm"}
+                    tone={macroPressure > 0 ? "warning" : "good"}
+                  />
+                ) : null}
                 <StatRow label="Consumer Distribution" value={game.distribution.consumer.toFixed(1)} />
                 <StatRow label="Enterprise Distribution" value={game.distribution.enterprise.toFixed(1)} />
                 <StatRow label="Board Pressure" value={game.boardPressure.toFixed(1)} tone={game.boardPressure < 40 ? "good" : game.boardPressure < 70 ? "warning" : "bad"} />

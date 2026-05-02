@@ -270,6 +270,7 @@ function parseCohorts(csv: string): CohortDef[] {
     category: (row.category || "Consumer") as CohortCategory,
     population: Number(row.population),
     priceSensitivity: Number(row.priceSensitivity),
+    basePriceSensitivity: Number(row.priceSensitivity),
     baseCapabilityWeight: Number(row.baseCapabilityWeight),
     weights: parseGoalRecord(row, "weight_", 0),
     reliabilityWeights: Object.fromEntries(

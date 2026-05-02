@@ -21,16 +21,16 @@ export function BankScreen({
     <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
       <div className="space-y-6">
         {game.deficitMonths > 0 ? (
-          <Panel title="Liquidity Crisis" subtitle="Deficit status is checked at month-end.">
+          <Panel title="Liquidity Crisis" subtitle="Deficit status is checked after each completed month.">
             <div className="rounded-2xl border border-rose-900/50 bg-rose-950/30 p-5 ring-1 ring-inset ring-rose-500/20">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <div className="text-xl font-bold tracking-tight text-rose-500">
-                    Deficit Month-End {game.deficitMonths} / 12
+                    Completed-Month Deficit {game.deficitMonths} / 12
                   </div>
                   <div className="mt-1 text-sm leading-6 text-rose-300">
                     Your company is operating at a negative cash balance. If you cannot secure positive liquidity
-                    before 12 consecutive months of deficit elapses, the board will liquidate your operations.
+                    before 12 consecutive completed-month deficits elapse, the board will liquidate your operations.
                   </div>
                 </div>
                 <div className="mt-4 shrink-0 md:mt-0">

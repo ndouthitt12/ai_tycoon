@@ -142,6 +142,23 @@ function readNumberValue(sources: unknown[], paths: ReadonlyArray<readonly strin
   return null;
 }
 
+function readOperatingCashflowTotal(source: unknown) {
+  if (!isLooseRecord(source)) return null;
+  const direct = readNumberValue([source], [["netCashflow"], ["cashflow"], ["profit"]]);
+  if (direct !== null) return direct;
+
+  const cloudRentalRevenue = readNumberValue([source], [["cloudRentalRevenue"]]) ?? 0;
+  const payroll = readNumberValue([source], [["payroll"]]) ?? 0;
+  const marketingSpend = readNumberValue([source], [["marketingSpend"]]) ?? 0;
+  const baseOpsCost = readNumberValue([source], [["baseOpsCost"]]) ?? 0;
+  const loanPayments = readNumberValue([source], [["loanPayments"]]) ?? 0;
+  const computeReservedCost = readNumberValue([source], [["computeReservedCost"]]) ?? 0;
+  const developmentCost = readNumberValue([source], [["developmentCost"]]) ?? 0;
+  const maintenanceCost = readNumberValue([source], [["maintenanceCost"]]) ?? 0;
+
+  return cloudRentalRevenue - payroll - marketingSpend - baseOpsCost - loanPayments - computeReservedCost - developmentCost - maintenanceCost;
+}
+
 function readTextValue(sources: unknown[], paths: ReadonlyArray<readonly string[]>) {
   const value = readFirstValue(sources, paths);
   if (typeof value === "string" && value.trim()) {
@@ -390,10 +407,14 @@ type ReleasedModelRow = {
   releaseMonth: number;
   developmentCost: number;
   totalRevenueGenerated: number;
-  previousMonthRevenueGenerated: number;
-  previousMonthUsers: number;
-  previousMonthAcquisition: number;
-  previousMonthChurn: number;
+  totalProfitGenerated: number | null;
+  lastWeekRevenueGenerated: number;
+  lastWeekUsers: number;
+  lastWeekAcquisition: number;
+  lastWeekChurn: number;
+  lastWeekTokenUsageMillions: number | null;
+  lastWeekProfit: number | null;
+  lastWeekCost: number | null;
   subscribersByCohort?: Record<CohortId, number>;
 };
 
@@ -406,6 +427,7 @@ function getReleasedModelRows(game: GameState): ReleasedModelRow[] {
       lastMonthChurn: 0,
       lastMonthUsers: 0,
     };
+    const performanceSources: unknown[] = [performance];
 
     return {
       id: model.id,
@@ -413,11 +435,26 @@ function getReleasedModelRows(game: GameState): ReleasedModelRow[] {
       releaseWeek: model.weekBuilt ?? (model.monthBuilt - 1) * WEEKS_PER_MONTH + 1,
       releaseMonth: model.monthBuilt,
       developmentCost: model.developmentCost,
-      totalRevenueGenerated: performance.totalRevenue,
-      previousMonthRevenueGenerated: performance.lastMonthRevenue,
-      previousMonthUsers: performance.lastMonthUsers,
-      previousMonthAcquisition: performance.lastMonthAcquisition,
-      previousMonthChurn: performance.lastMonthChurn,
+      totalRevenueGenerated: readNumberValue(performanceSources, [["totalRevenue"], ["lifetimeRevenue"]]) ?? 0,
+      totalProfitGenerated: readNumberValue(performanceSources, [["totalProfit"], ["lifetimeProfit"], ["profit"]]),
+      lastWeekRevenueGenerated: readNumberValue(performanceSources, [["lastWeekRevenue"], ["weeklyRevenue"]]) ?? performance.lastMonthRevenue,
+      lastWeekUsers: readNumberValue(performanceSources, [["lastWeekUsers"], ["weeklyUsers"]]) ?? performance.lastMonthUsers,
+      lastWeekAcquisition: readNumberValue(performanceSources, [["lastWeekAcquisition"], ["weeklyAcquisition"]]) ?? performance.lastMonthAcquisition,
+      lastWeekChurn: readNumberValue(performanceSources, [["lastWeekChurn"], ["weeklyChurn"]]) ?? performance.lastMonthChurn,
+      lastWeekTokenUsageMillions: readNumberValue(performanceSources, [
+        ["lastWeekTokenUsageMillions"],
+        ["lastWeekTokensMillions"],
+        ["weeklyTokenUsageMillions"],
+        ["weeklyUsageMillions"],
+      ]),
+      lastWeekProfit: readNumberValue(performanceSources, [["lastWeekProfit"], ["weeklyProfit"]]),
+      lastWeekCost: readNumberValue(performanceSources, [
+        ["lastWeekCost"],
+        ["lastWeekComputeCost"],
+        ["lastWeekServingCost"],
+        ["weeklyCost"],
+        ["weeklyComputeCost"],
+      ]),
       subscribersByCohort: model.subscribersByCohort,
     };
   });
@@ -456,7 +493,10 @@ export function OverviewScreen({
   const productDef = PRODUCT_TYPES[activeProduct];
   const attachedModels = product.modelIds
     .map((modelId) => getModelById(game, modelId))
-    .filter((model): model is NonNullable<ReturnType<typeof getModelById>> => Boolean(model));
+    .filter((model): model is NonNullable<ReturnType<typeof getModelById>> => Boolean(model && model.postTrainingComplete !== false && model.retired !== true));
+  const deployableModels = game.models.filter(
+    (model) => model.postTrainingComplete !== false && model.retired !== true && model.deprecated !== true,
+  );
   const averageCapability = attachedModels.length
     ? Math.round(attachedModels.reduce((sum, model) => sum + model.capability, 0) / attachedModels.length)
     : 0;
@@ -469,7 +509,45 @@ export function OverviewScreen({
     ? getMarketComparison(Math.max(...game.models.map((model) => model.capability)), game.marketStandard)
     : null;
   const releasedModels = getReleasedModelRows(game);
-  const productRecord = product as LooseRecord;
+  const showModelTotalProfit = releasedModels.some((model) => model.totalProfitGenerated !== null);
+  const showModelUsage = releasedModels.some((model) => model.lastWeekTokenUsageMillions !== null);
+  const showModelWeeklyProfit = releasedModels.some((model) => model.lastWeekProfit !== null);
+  const showModelWeeklyCost = releasedModels.some((model) => model.lastWeekCost !== null);
+  const maintenanceCost = readNumberValue([game.lastMonth, game.currentMonthCashflow], [
+    ["maintenanceCost"],
+    ["modelMaintenanceCost"],
+    ["maintenance"],
+  ]);
+  const lastWeekRevenue = readNumberValue([game, game.lastWeek], [["lastWeekRevenue"], ["weeklyRevenue"], ["revenue"]]) ?? 0;
+  const lastWeekComputeCost = readNumberValue([game, game.lastWeek], [["lastWeekComputeCost"], ["weeklyComputeCost"], ["computeCost"]]) ?? 0;
+  const lastWeekProfit = readNumberValue([game, game.lastWeek], [["lastWeekProfit"], ["weeklyProfit"], ["profit"]]) ?? Math.round(lastWeekRevenue - lastWeekComputeCost);
+  const currentMonthRevenue = readNumberValue([game, game.currentMonthToDate], [["currentMonthRevenue"], ["monthToDateRevenue"], ["revenue"]]) ?? lastWeekRevenue;
+  const currentMonthComputeCost = readNumberValue([game, game.currentMonthToDate], [["currentMonthComputeCost"], ["monthToDateComputeCost"], ["computeCost"]]) ?? 0;
+  const currentMonthProductProfit = Math.round(currentMonthRevenue - currentMonthComputeCost);
+  const currentMonthOperatingCashflow = game.currentMonthCashflow.cloudRentalRevenue
+    - game.currentMonthCashflow.payroll
+    - game.currentMonthCashflow.marketingSpend
+    - game.currentMonthCashflow.baseOpsCost
+    - game.currentMonthCashflow.loanPayments
+    - game.currentMonthCashflow.computeReservedCost
+    - (game.currentMonthCashflow.developmentCost ?? 0)
+    - (game.currentMonthCashflow.maintenanceCost ?? 0);
+  const lastWeekCashflowSource = getPathValue(game, ["lastWeekCashflow"]) ?? getPathValue(game, ["weeklyCashflow"]);
+  const lastWeekCashflow = readNumberValue([game, lastWeekCashflowSource], [
+    ["lastWeekCashflow"],
+    ["weeklyCashflow"],
+    ["cashflow"],
+    ["netCashflow"],
+  ]) ?? readOperatingCashflowTotal(lastWeekCashflowSource);
+  const weeklyRevenueTrend = {
+    label: `${money(currentMonthRevenue)} MTD`,
+    tone: (lastWeekRevenue >= game.lastMonth.revenue / WEEKS_PER_MONTH ? "good" : "default") as Tone,
+  };
+  const weeklyProfitTrend = {
+    label: `${money(currentMonthProductProfit)} MTD product gross`,
+    tone: (lastWeekProfit > 0 ? "good" : lastWeekProfit < 0 ? "bad" : "default") as Tone,
+  };
+  const productRecord = product as unknown as LooseRecord;
   const productSnapshot = getProductSnapshot(game.lastMonth, activeProduct);
   const productSources: unknown[] = [
     productRecord,
@@ -711,7 +789,7 @@ export function OverviewScreen({
           helper: computeDemandDelta !== null ? `${formatSurfaceNumber(computeDemandDelta)} pod delta` : undefined,
         }
       : null,
-  ].filter((metric): metric is { label: string; value: string; tone: Tone; helper?: string } => Boolean(metric));
+  ].filter(Boolean) as Array<{ label: string; value: string; tone: Tone; helper?: string }>;
   const trafficSpikeBadgeLabel = trafficSpikePct !== null && Math.abs(trafficSpikePct) >= 5
     ? `${trafficSpikePct >= 0 ? "+" : ""}${Math.round(trafficSpikePct)}% traffic`
     : burstMultiplier !== null && Math.abs(burstMultiplier - 1) >= 0.05
@@ -880,8 +958,8 @@ export function OverviewScreen({
 
                   <div className="rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
                     <div className="text-sm font-medium text-[#c9d1d9]">Available Models</div>
-                    {game.models.length === 0 ? (
-                      <div className="mt-3 text-sm text-[#484f58]">Ship a model from the Lab first.</div>
+                    {deployableModels.length === 0 ? (
+                      <div className="mt-3 text-sm text-[#484f58]">Complete post-training in the Lab before attaching a model.</div>
                     ) : (
                       <div className="mt-3 overflow-x-auto rounded-md border border-[#30363d]">
                         <table className="w-full text-sm">
@@ -895,7 +973,7 @@ export function OverviewScreen({
                             </tr>
                           </thead>
                           <tbody>
-                            {game.models.map((option) => {
+                            {deployableModels.map((option) => {
                               const comparison = getMarketComparison(option.capability, game.marketStandard);
                               const active = product.modelIds.includes(option.id);
 
@@ -1112,35 +1190,47 @@ export function OverviewScreen({
       </div>
 
       <div className="space-y-5">
-        <Panel title="Company Health" subtitle="Weekly operations feed this completed-month report, while ARR and runway stay monthly planning metrics.">
+        <Panel title="Company Health" subtitle="Last-week operating results lead; completed-month totals remain as planning context.">
           <div className="space-y-5">
             <div>
               <div className="text-sm font-medium text-[#c9d1d9]">Financials</div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <CompanyMetric
-                  label="Completed Month Revenue"
-                  value={money(game.lastMonth.revenue)}
-                  deltaLabel={revenueTrend.label}
-                  deltaTone={revenueTrend.tone}
-                  points={getTrendPoints(game.history.revenue, game.lastMonth.revenue)}
+                  label="Last Week Revenue"
+                  value={money(lastWeekRevenue)}
+                  deltaLabel={weeklyRevenueTrend.label}
+                  deltaTone={weeklyRevenueTrend.tone}
+                  points={[game.lastMonth.revenue / WEEKS_PER_MONTH, lastWeekRevenue]}
                 />
                 <CompanyMetric
-                  label="Completed Month Profit"
-                  value={money(game.lastMonth.profit)}
-                  deltaLabel={profitTrend.label}
-                  deltaTone={profitTrend.tone}
-                  points={getTrendPoints(game.history.profit, game.lastMonth.profit)}
+                  label="Last Week Gross Profit"
+                  value={money(lastWeekProfit)}
+                  deltaLabel={weeklyProfitTrend.label}
+                  deltaTone={weeklyProfitTrend.tone}
+                  points={[game.lastMonth.profit / WEEKS_PER_MONTH, lastWeekProfit]}
                 />
               </div>
               <div className="mt-4 space-y-3 rounded-md bg-[#0d1117] p-4 border border-[#30363d]">
                 <StatRow label="ARR" value={money(arr)} tone={arr >= 10000000 ? "good" : "default"} />
-                <StatRow label="Reserved Cloud Cost Completed Month" value={money(game.lastMonth.computeReservedCost)} />
-                <StatRow label="Overflow Cost Completed Month" value={money(game.lastMonth.overflowCost)} tone={game.lastMonth.overflowCost > 0 ? "warning" : "default"} />
-                <StatRow label="Payroll Completed Month" value={money(game.lastMonth.payroll)} />
-                <StatRow label="Marketing Spend Completed Month" value={money(game.lastMonth.marketingSpend)} tone={game.lastMonth.marketingSpend > 0 ? "warning" : "default"} />
-                <StatRow label="Base Operations Completed Month" value={money(game.lastMonth.baseOpsCost ?? 0)} />
-                <StatRow label="Training Burn Completed Month" value={money(game.lastMonth.developmentCost ?? 0)} tone={(game.lastMonth.developmentCost ?? 0) > 0 ? "warning" : "default"} />
-                <StatRow label="Loan Payments Completed Month" value={money(game.lastMonth.loanPayments ?? 0)} tone={(game.lastMonth.loanPayments ?? 0) > 0 ? "warning" : "default"} />
+                <StatRow label="Last Week Compute Cost" value={money(lastWeekComputeCost)} tone={lastWeekComputeCost > 0 ? "warning" : "default"} />
+                {lastWeekCashflow !== null ? (
+                  <StatRow label="Last Week Cashflow" value={money(lastWeekCashflow)} tone={lastWeekCashflow >= 0 ? "good" : "bad"} />
+                ) : (
+                  <StatRow label="Current Month Cashflow" value={money(currentMonthOperatingCashflow)} tone={currentMonthOperatingCashflow >= 0 ? "good" : "bad"} />
+                )}
+                <StatRow label="Current Month Revenue" value={money(currentMonthRevenue)} />
+                <StatRow label="Current Month Gross Profit" value={money(currentMonthProductProfit)} tone={currentMonthProductProfit >= 0 ? "good" : "bad"} />
+                <StatRow label="Completed Month Revenue" value={money(game.lastMonth.revenue)} />
+                <StatRow label="Completed Month Profit" value={money(game.lastMonth.profit)} tone={game.lastMonth.profit >= 0 ? "good" : "bad"} />
+                <StatRow label="Reserved Cloud Cost MTD" value={money(game.currentMonthCashflow.computeReservedCost)} />
+                <StatRow label="Payroll MTD" value={money(game.currentMonthCashflow.payroll)} />
+                <StatRow label="Marketing Spend MTD" value={money(game.currentMonthCashflow.marketingSpend)} tone={game.currentMonthCashflow.marketingSpend > 0 ? "warning" : "default"} />
+                <StatRow label="Base Operations MTD" value={money(game.currentMonthCashflow.baseOpsCost ?? 0)} />
+                <StatRow label="Training Burn MTD" value={money(game.currentMonthCashflow.developmentCost ?? 0)} tone={(game.currentMonthCashflow.developmentCost ?? 0) > 0 ? "warning" : "default"} />
+                {maintenanceCost !== null ? (
+                  <StatRow label="Maintenance MTD" value={money(game.currentMonthCashflow.maintenanceCost ?? maintenanceCost)} tone={(game.currentMonthCashflow.maintenanceCost ?? maintenanceCost) > 0 ? "warning" : "default"} />
+                ) : null}
+                <StatRow label="Loan Payments MTD" value={money(game.currentMonthCashflow.loanPayments ?? 0)} tone={(game.currentMonthCashflow.loanPayments ?? 0) > 0 ? "warning" : "default"} />
                 <StatRow label="Funding Window" value={game.funding.available ? money(game.funding.offer) : `${monthsUntilFunding} mo`} />
                 <StatRow label="Dilution" value={game.funding.available ? pct(game.funding.dilution) : pct(game.totalDilution)} />
               </div>
@@ -1198,7 +1288,7 @@ export function OverviewScreen({
       ) : (
           <Panel
             title="Released Models"
-            subtitle="Release timing is weekly; commercial totals keep completed-month readouts for readability."
+            subtitle="Release timing and active model metrics are weekly; lifetime totals stay cumulative."
           >
             {releasedModels.length === 0 ? (
               <EmptyState title="No released models yet" body="Launch a run in the Lab to populate this table." />
@@ -1211,10 +1301,14 @@ export function OverviewScreen({
                       <th className="px-4 py-3 text-left font-medium">Release Week</th>
                       <th className="px-4 py-3 text-left font-medium">Dev Cost</th>
                       <th className="px-4 py-3 text-left font-medium">Total Revenue</th>
-                      <th className="px-4 py-3 text-left font-medium">Completed Month Revenue</th>
-                      <th className="px-4 py-3 text-left font-medium">Completed Month Users</th>
-                      <th className="px-4 py-3 text-left font-medium">Completed Month Acquisition</th>
-                      <th className="px-4 py-3 text-left font-medium">Completed Month Churn</th>
+                      {showModelTotalProfit ? <th className="px-4 py-3 text-left font-medium">Total Profit</th> : null}
+                      <th className="px-4 py-3 text-left font-medium">Last Week Revenue</th>
+                      {showModelWeeklyCost ? <th className="px-4 py-3 text-left font-medium">Last Week Cost</th> : null}
+                      {showModelWeeklyProfit ? <th className="px-4 py-3 text-left font-medium">Last Week Profit</th> : null}
+                      {showModelUsage ? <th className="px-4 py-3 text-left font-medium">Last Week Usage</th> : null}
+                      <th className="px-4 py-3 text-left font-medium">Last Week Users</th>
+                      <th className="px-4 py-3 text-left font-medium">Last Week Acquisition</th>
+                      <th className="px-4 py-3 text-left font-medium">Last Week Churn</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1233,18 +1327,28 @@ export function OverviewScreen({
                             <td className="px-4 py-3 font-mono">W{model.releaseWeek} / {monthLabelFromWeek(model.releaseWeek)}</td>
                             <td className="px-4 py-3 font-mono">{money(model.developmentCost)}</td>
                             <td className="px-4 py-3 font-mono">{money(model.totalRevenueGenerated)}</td>
-                            <td className="px-4 py-3 font-mono">{money(model.previousMonthRevenueGenerated)}</td>
+                            {showModelTotalProfit ? <td className="px-4 py-3 font-mono">{model.totalProfitGenerated !== null ? money(model.totalProfitGenerated) : "Pending"}</td> : null}
+                            <td className="px-4 py-3 font-mono">{money(model.lastWeekRevenueGenerated)}</td>
+                            {showModelWeeklyCost ? <td className="px-4 py-3 font-mono">{model.lastWeekCost !== null ? money(model.lastWeekCost) : "Pending"}</td> : null}
+                            {showModelWeeklyProfit ? <td className="px-4 py-3 font-mono">{model.lastWeekProfit !== null ? money(model.lastWeekProfit) : "Pending"}</td> : null}
+                            {showModelUsage ? (
+                              <td className="px-4 py-3 font-mono">
+                                {model.lastWeekTokenUsageMillions !== null
+                                  ? `${model.lastWeekTokenUsageMillions.toLocaleString(undefined, { maximumFractionDigits: 1 })}M`
+                                  : "Pending"}
+                              </td>
+                            ) : null}
                             <td className="px-4 py-3 font-mono">
-                              {model.previousMonthUsers.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                              {model.lastWeekUsers.toLocaleString(undefined, { maximumFractionDigits: 1 })}
                             </td>
                             <td className="px-4 py-3 font-mono">
-                              {model.previousMonthAcquisition.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                              {model.lastWeekAcquisition.toLocaleString(undefined, { maximumFractionDigits: 1 })}
                             </td>
-                            <td className="px-4 py-3 font-mono">{pct(model.previousMonthChurn)}</td>
+                            <td className="px-4 py-3 font-mono">{pct(model.lastWeekChurn)}</td>
                           </tr>
                           {isExpanded && model.subscribersByCohort && (
                             <tr className="bg-[#161b22]/70 transition-all">
-                              <td colSpan={8} className="px-4 py-4 border-b border-[#30363d]">
+                              <td colSpan={8 + (showModelTotalProfit ? 1 : 0) + (showModelWeeklyCost ? 1 : 0) + (showModelWeeklyProfit ? 1 : 0) + (showModelUsage ? 1 : 0)} className="px-4 py-4 border-b border-[#30363d]">
                                 <div className="flex flex-col gap-3">
                                   <div className="flex flex-wrap items-center gap-5 text-sm text-[#c9d1d9]">
                                     <div className="w-48 font-medium text-[#e6edf3] uppercase tracking-widest text-[10px]">Subscriber Core Demographics</div>

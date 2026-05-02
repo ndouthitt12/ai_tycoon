@@ -13,6 +13,7 @@ export type DatasetPackSizeId = "small" | "medium" | "large";
 export type ModelSizeId = "small" | "medium" | "large" | "frontier";
 export type UpgradeId = "training" | "inference" | "gtm" | "cloud";
 export type TrainingMode = "new" | "upgrade" | "branch";
+export type PostTrainingPhaseId = "rlhf" | "domain_finetune" | "red_team";
 export type ModelGoalId =
   | "speed"
   | "accuracy"
@@ -34,6 +35,7 @@ export interface CohortDef {
   category: CohortCategory;
   population: number;
   priceSensitivity: number;
+  basePriceSensitivity: number;
   weights: Partial<Record<ModelGoalId, number>>;
   reliabilityWeights: Record<ReliabilityTierId, number>;
   baseCapabilityWeight: number;
@@ -148,6 +150,10 @@ export interface ModelState {
   version: number;
   developmentCost: number;
   capability: number;
+  trueCapability: number;
+  demonstratedCapability: number;
+  marketTrust: number;
+  capabilityDrift: number;
   inferenceCost: number;
   trust: number;
   memorySize: number;
@@ -162,15 +168,48 @@ export interface ModelState {
   subscribersByCohort: Record<CohortId, number>;
   cohortTenureWeeks: Record<CohortId, number>;
   reliability: Record<ReliabilityTierId, number>;
+  postTrainingComplete: boolean;
+  deprecated: boolean;
+  deprecationStartWeek: number | null;
+  retired: boolean;
+  maintenanceCostPerMonth: number;
+  pendingSafetyRisk: number;
+}
+
+export interface PostTrainingConfig {
+  rlhf: boolean;
+  domainFocus: ModelGoalId | null;
+  redTeam: boolean;
+  weeksAllocated: number;
+}
+
+export interface PostTrainingRun {
+  id: number;
+  modelId: number;
+  config: PostTrainingConfig;
+  weeksElapsed: number;
+  weeksTotal: number;
+  projectedTrustDelta: number;
+  projectedGoalBoost: { goalId: ModelGoalId; delta: number } | null;
+  projectedSafetyIncidentRisk: number;
 }
 
 export interface ModelPerformanceState {
   totalRevenue: number;
+  totalProfit: number;
+  totalTokenUsageMillions: number;
+  totalComputeCost: number;
   lastWeekRevenue: number;
+  lastWeekTokenUsageMillions: number;
+  lastWeekComputeCost: number;
+  lastWeekProfit: number;
   lastWeekAcquisition: number;
   lastWeekChurn: number;
   lastWeekUsers: number;
   lastMonthRevenue: number;
+  lastMonthTokenUsageMillions: number;
+  lastMonthComputeCost: number;
+  lastMonthProfit: number;
   lastMonthAcquisition: number;
   lastMonthChurn: number;
   lastMonthUsers: number;
@@ -208,6 +247,7 @@ export interface HiringCandidateState {
   skill: number;
   leadership: number;
   loyalty: number;
+  burnout: number;
   poachRisk: number;
   breakthroughChance: number;
   signingCost: number;
@@ -351,6 +391,7 @@ export interface LastMonthSnapshot {
   cloudRentalRevenue: number;
   cloudRentalPodsRented: number;
   developmentCost?: number;
+  maintenanceCost?: number;
   hiringSpend: number;
   severanceCost: number;
   products?: Record<ProductTypeId, ProductPeriodSnapshot>;
@@ -365,6 +406,7 @@ export interface OperatingCashflowSnapshot {
   cloudRentalRevenue: number;
   cloudRentalPodsRented: number;
   developmentCost: number;
+  maintenanceCost: number;
 }
 
 export interface ProductPeriodSnapshot {
@@ -439,6 +481,10 @@ export interface GameState {
   competitorLaunchShock: number;
   rivals: Record<RivalId, RivalState>;
   marketModifiers: MarketModifier[];
+  macroPressure: number;
+  macroPressureWeeksRemaining: number;
+  marketMaturityWeeks: number;
+  lastMacroShockWeek: number;
   headcount: Record<RoleId, number>;
   dataInventory: Record<DataTierId, number>;
   upgrades: Record<UpgradeId, number>;
@@ -459,6 +505,7 @@ export interface GameState {
   products: Record<ProductTypeId, ProductState>;
   trainingConfig: TrainingConfig;
   activeRuns: ActiveRun[];
+  postTrainingRuns: PostTrainingRun[];
   models: ModelState[];
   modelPerformance: Record<string, ModelPerformanceState>;
   pendingEvent: PendingEvent | null;
@@ -474,8 +521,12 @@ export interface GameState {
   loans: Loan[];
   lastWeek: ProductReportingSnapshot;
   currentMonthToDate: ProductReportingSnapshot;
+  lastWeekCashflow: OperatingCashflowSnapshot;
   currentMonthCashflow: OperatingCashflowSnapshot;
+  lastWeekCompany: LastMonthSnapshot;
+  currentMonthCompany: LastMonthSnapshot;
   lastMonth: LastMonthSnapshot;
+  pendingSafetyRisk: number;
   nextId: number;
 }
 
